@@ -210,13 +210,17 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	check_cuda_return("fail in initializing device", cudaDeviceSynchronize());
 
 	/* Initialise gradient vector on device */
-	int step = 500; // Initialize step d_G entries at a time 
+	// BENCHMARK
+	int step = active_size; // Initialize step d_G entries at a time 
 					// NOTE: This can take awhile, so some devices will time out.  Adjust this value accordingly.
 	int start = 0;	// Starting index of d_G to update.
+	int left = active_size;
 	do {
+		step = std::min(step, left);
 		init_device_gradient(block_size, start, step, active_size);
 		start += step;
-	} while (start < active_size);
+		left -= step;
+	} while (left > 0);
 
 	int nblocks, bsize;
 	find_launch_parameters(nblocks, bsize, l);
@@ -287,7 +291,8 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	}
 	dbgprintf(true, "load_problem_parameters: %d elements need to be moved to device\n", elements);
 
-#define TRANSFER_CHUNK_SIZE		1000000
+	// BENCHMARK
+#define TRANSFER_CHUNK_SIZE		100000000 
 	/**
 	NOTE: cuda_svm_node is typedef to float2
 	float2.x == svm_node.index

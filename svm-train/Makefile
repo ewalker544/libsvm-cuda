@@ -2,8 +2,8 @@ NVCC = nvcc
 CXX = icpc
 
 COMPAT_FLAG=-Xcompiler "-std=c++11"
-INCLUDE_FLAG=-I${TACC_CUDA_INC} -I../libsvm
-CCBIN_FLAG = -ccbin=icpc
+INCLUDE_FLAG=-I../libsvm
+CCBIN_FLAG = -ccbin=$(CXX)
 CCFLAGS := $(CCBIN_FLAG) -m64 -O3 -cudart static
 LDFLAGS := $(CCBIN_FLAG) -m64 -O3 
 GENCODE_FLAGS := -gencode arch=compute_30,code=sm_35
