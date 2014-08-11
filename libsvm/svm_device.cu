@@ -3,6 +3,10 @@
 #include <iostream>
 using namespace std;
 #include <stdio.h>
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#include "device_functions.h"
+#include "math_constants.h"
 #include "math.h"
 #include "svm_device.h"
 #include "cuda_reducer.h"
@@ -434,7 +438,66 @@ __device__ GradValue_t device_gradient_computer(int i, int j)
 		return 0;
 }
 
-__global__ void cuda_init_gradient_block(int startj, int N)
+
+__device__ __forceinline__ GradValue_t warpReduceSum(GradValue_t val) 
+{
+	for (int offset = warpSize/2; offset > 0; offset /= 2) {
+		val += __shfl_down(val, offset);
+	}
+	return val;
+}
+
+__device__ __forceinline__ GradValue_t blockReduceSum(GradValue_t val) 
+{
+	static __shared__ int shared[32]; // Shared mem for 32 partial sums
+	int lane = threadIdx.x % warpSize;
+	int wid = threadIdx.x / warpSize;
+
+	val = warpReduceSum(val);     // Each warp performs partial reduction
+
+	if (lane==0) shared[wid]=val;	// Write reduced value to shared memory
+
+	__syncthreads();              // Wait for all partial reductions
+
+	//read from shared memory only if that warp existed
+	val = (threadIdx.x < blockDim.x / warpSize) ? shared[lane] : 0;
+
+	if (wid==0) val = warpReduceSum(val); //Final reduce within first warp
+
+	return val;
+}
+
+__global__ void cuda_init_gradient_block2(int startj, int N)
+{
+	int j = blockIdx.y * blockDim.y + threadIdx.y + startj;
+	if (j >= N)
+		return ;
+
+	GradValue_t sum = 0;
+	for (int i = blockIdx.x * blockDim.x + threadIdx.x;
+			i < N;
+			i += blockDim.x * gridDim.x) {
+		sum += device_gradient_computer(i, j);
+	}
+
+	sum = warpReduceSum(sum);
+
+	if (threadIdx.x & (warpSize - 1) == 0) { 
+		atomicAdd(&d_G[j], sum);
+	}
+
+#if 0
+	sum = blockReduceSum(sum);
+
+	if (threadIdx.x == 0) { 
+		atomicAdd(&d_G[j], sum);
+	}
+#endif
+
+	return;
+}
+
+__global__ void cuda_init_gradient_block1(int startj, int N)
 {
 	int i = blockIdx.x * blockDim.x * 2 + threadIdx.x;
 	int j = blockIdx.y * blockDim.y + threadIdx.y + startj;
@@ -460,21 +523,38 @@ __global__ void cuda_init_gradient_block(int startj, int N)
 	@param stepj		number of steps from startj to update
 	@param N			size of gradient vector
 */
-void init_device_gradient(int block_size, int startj, int stepj, int N)
+void init_device_gradient2(int block_size, int startj, int stepj, int N)
+{
+	dim3 grid;
+	// the number of blocks in the ith dimension
+	grid.x = min((N + block_size-1) / block_size, 1024);
+	// the number of blocks in the jth dimension == G_j that will be updated
+	grid.y = stepj; 
+
+	dim3 block;
+	block.x = block_size; // number of threads in the ith dimension
+	block.y = 1; // number of threads per block in the jth dimension (one thread per block)
+	
+	cuda_init_gradient_block2 << <grid, block >> > (startj, N);
+	check_cuda_kernel_launch("fail in cuda_init_gradient_block2");
+}
+
+void init_device_gradient1(int block_size, int startj, int stepj, int N)
 {
 	int reduce_block_size = 2 * block_size;
 	dim3 grid;
-	grid.x = N / reduce_block_size;
-	if (N%reduce_block_size != 0) ++grid.x; // the number of blocks in the ith dimension
-	grid.y = stepj; // the number of blocks in the jth dimension == G_j that will be updated
+	// the number of blocks in the ith dimension
+	grid.x = (N+reduce_block_size-1) / reduce_block_size;
+	// the number of blocks in the jth dimension == G_j that will be updated
+	grid.y = stepj; 
 
 	dim3 block;
 	block.x = block_size; // number of threads in the ith dimension
 	block.y = 1; // number of threads per block in the jth dimension (one thread per block)
 	
 	size_t shared_mem = block.x * sizeof(GradValue_t);
-	cuda_init_gradient_block << <grid, block, shared_mem >> > (startj, N);
-	check_cuda_kernel_launch("fail in cuda_init_gradient_block");
+	cuda_init_gradient_block1 << <grid, block, shared_mem >> > (startj, N);
+	check_cuda_kernel_launch("fail in cuda_init_gradient_block1");
 }
 
 __global__ void cuda_find_gmax(find_gmax_param param, int N, bool debug)

@@ -1,10 +1,10 @@
 NVCC = nvcc
 CXX = icpc
 
-COMPAT_FLAG=-Xcompiler "-std=c++11"
+COMPAT_FLAGS=-Xcompiler "-O3"
 INCLUDE_FLAG=-I../libsvm
 CCBIN_FLAG = -ccbin=$(CXX)
-CCFLAGS := $(CCBIN_FLAG) -m64 -O3 -cudart static
+CCFLAGS := $(CCBIN_FLAG) -m64 -O3
 LDFLAGS := $(CCBIN_FLAG) -m64 -O3 
 GENCODE_FLAGS := -gencode arch=compute_30,code=sm_35
 LIBRARIES := -L../libsvm -lsvm -lcudart
@@ -12,7 +12,7 @@ LIBRARIES := -L../libsvm -lsvm -lcudart
 all: svm-train
 
 svm-train.o: svm-train.c
-	$(NVCC) $(INCLUDE_FLAG) $(CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+	$(NVCC) $(INCLUDE_FLAG) $(CCFLAGS) $(COMPAT_FLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
 svm-train: svm-train.o
 	$(NVCC) $(LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)

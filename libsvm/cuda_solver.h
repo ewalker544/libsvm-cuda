@@ -19,10 +19,6 @@
 #ifndef _CUDA_SOLVER_H_
 #define _CUDA_SOLVER_H_
 
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-#include "device_functions.h"
-#include "math_constants.h"
 #include "svm.h"
 #include <iostream>
 #include <memory>

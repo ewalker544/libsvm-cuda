@@ -18,7 +18,6 @@
  */
 #ifndef _SVM_DEFS_H_
 #define _SVM_DEFS_H_
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "device_functions.h"

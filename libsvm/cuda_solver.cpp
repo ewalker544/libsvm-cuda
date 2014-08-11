@@ -217,7 +217,7 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	int left = active_size;
 	do {
 		step = std::min(step, left);
-		init_device_gradient(block_size, start, step, active_size);
+		init_device_gradient2(block_size, start, step, active_size);
 		start += step;
 		left -= step;
 	} while (left > 0);
