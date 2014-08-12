@@ -91,12 +91,15 @@ void launch_cuda_compute_nu_obj_diff(size_t num_blocks, size_t block_size, GradV
 void launch_cuda_prep_nu_gmax(size_t num_blocks, size_t block_size, GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2,
 	int *dh_gmaxp_idx, int *dh_gmaxn_idx, int N);
 
-/********** Host functions ***********/
+/***** Device setup functions ********/
 cudaError_t update_solver_variables(SChar_t *dh_y, CValue_t *dh_QD, GradValue_t *dh_G, GradValue_t *dh_alpha, char *dh_alpha_status, double Cp, double Cn);
 cudaError_t update_rbf_variables(CValue_t *dh_x_square);
 cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l);
 void unbind_texture();
 void init_device_gradient1(int block_size, int startj, int stepj, int N);
 void init_device_gradient2(int block_size, int startj, int stepj, int N);
+
+/***** CACHE *******/
+cudaError_t setup_device_cache(CValue_t *, int);
 
 #endif

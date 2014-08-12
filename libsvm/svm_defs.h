@@ -81,8 +81,7 @@ typedef signed char SChar_t;
 typedef float CValue_t; // used for computing kernel values
 #define CVALUE_MAX  FLT_MAX
 
-// BENCHMARK
-#define THREADS_PER_BLOCK	1024
+#define THREADS_PER_BLOCK	512
 #define WARP_SIZE			32
 
 //#define USE_DOUBLE_GRADIENT

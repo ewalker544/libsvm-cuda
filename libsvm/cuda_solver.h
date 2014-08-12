@@ -121,6 +121,7 @@ protected:
 	/**
 	Properties of this CUDA solver
 	*/
+	int CUDA_ARCH;
 	int num_blocks;
 	int block_size;
 
@@ -157,6 +158,10 @@ protected:
 	CudaArray_t<GradValue_t> dh_alpha; 
 	CudaArray_t<char> dh_alpha_status; 	
 
+	/********** CACHE ***********/
+	CudaArray_t<CValue_t> dh_cache;
+	double cache_size; // cache size as set by parameter
+
 	/**
 	The following arrays are required by the reducers
 	*/
@@ -168,6 +173,11 @@ protected:
 	enum { LOWER_BOUND = 0, UPPER_BOUND = 1, FREE = 2 };
 
 private:
+	/**
+	Initializes cache
+	**/
+	void setup_cache(int active_size);
+
 	/**
 	Initializes the cuda device memory array
 	*/

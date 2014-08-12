@@ -210,14 +210,23 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	check_cuda_return("fail in initializing device", cudaDeviceSynchronize());
 
 	/* Initialise gradient vector on device */
-	// BENCHMARK
-	int step = active_size; // Initialize step d_G entries at a time 
-					// NOTE: This can take awhile, so some devices will time out.  Adjust this value accordingly.
+	int step; // Initialize step d_G entries at a time 
+	// NOTE: This can take awhile, so some devices may time out.  Adjust this value accordingly.
+	if (CUDA_ARCH >= 300) {
+	    step = active_size; 
+	} else {
+		step = 500;
+	}
 	int start = 0;	// Starting index of d_G to update.
 	int left = active_size;
+
 	do {
 		step = std::min(step, left);
-		init_device_gradient2(block_size, start, step, active_size);
+		if (CUDA_ARCH >= 300) {
+			init_device_gradient2(block_size, start, step, active_size);
+		} else {
+			init_device_gradient1(block_size, start, step, active_size);
+		}
 		start += step;
 		left -= step;
 	} while (left > 0);
@@ -226,6 +235,8 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	find_launch_parameters(nblocks, bsize, l);
 	launch_cuda_setup_QD(nblocks, bsize, l);
 	check_cuda_kernel_launch("fail in cuda_setup_QD");
+
+	setup_cache(active_size);
 
 #ifdef DEBUG_CHECK
 	show_memory_usage(mem_size);
@@ -270,6 +281,15 @@ void CudaSolver::show_memory_usage(const int &total_space)
 }
 
 /**
+ * Initializes the simple column cache
+ * */
+void CudaSolver::setup_cache(int active_size)
+{
+	dh_cache = make_unique_cuda_array<CValue_t>(active_size);
+	setup_device_cache(&dh_cache[0], active_size);
+}
+
+/**
 Loads: kernel_type, svm_type, gamma, coef0, degree, x
 */
 void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_parameter &param)
@@ -291,8 +311,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	}
 	dbgprintf(true, "load_problem_parameters: %d elements need to be moved to device\n", elements);
 
-	// BENCHMARK
-#define TRANSFER_CHUNK_SIZE		100000000 
+#define TRANSFER_CHUNK_SIZE		1000000
 	/**
 	NOTE: cuda_svm_node is typedef to float2
 	float2.x == svm_node.index
@@ -371,6 +390,16 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 CudaSolver::CudaSolver(const svm_problem &prob, const svm_parameter &param, bool quiet_mode)
 	: l(prob.l), eps(param.eps), kernel_type(param.kernel_type), svm_type(param.svm_type), mem_size(0), quiet_mode(quiet_mode)
 {
+	int deviceNum;
+	cudaGetDevice(&deviceNum);
+	cudaDeviceProp deviceProp;
+	cudaError_t err = cudaGetDeviceProperties(&deviceProp, deviceNum);
+	if (err != cudaSuccess) {
+		std::cerr << "FATAL ERROR: unable to get CUDA device version!\n";
+		exit(1);
+	}
+	CUDA_ARCH = deviceProp.major * 100 + deviceProp.minor * 10;
+
 	startup_time = clock();
 	dbgprintf(true, "CudaSolver: GO!\n"); // DEBUG
 	try {
