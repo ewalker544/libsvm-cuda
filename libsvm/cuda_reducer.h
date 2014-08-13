@@ -253,7 +253,7 @@ public:
 	}
 };
 
-__device__ GradValue_t device_gradient_computer(int i, int j);
+__device__ GradValue_t device_compute_gradient(int i, int j);
 
 class D_GradientAdder
 {
@@ -278,10 +278,10 @@ public:
 
 	__device__ void load_shared_memory(const int &tid, const int &g_idx, const int &p_idx, const int &N)
 	{
-		s_acc[tid] = device_gradient_computer(g_idx, j);
+		s_acc[tid] = device_compute_gradient(g_idx, j);
 
 		if (p_idx < N) {
-			s_acc[tid] += device_gradient_computer(p_idx, j);
+			s_acc[tid] += device_compute_gradient(p_idx, j);
 		}
 	}
 

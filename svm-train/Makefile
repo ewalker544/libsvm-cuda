@@ -14,7 +14,7 @@ all: svm-train
 svm-train.o: svm-train.c
 	$(NVCC) $(INCLUDE_FLAG) $(CCFLAGS) $(COMPAT_FLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-svm-train: svm-train.o
+svm-train: svm-train.o ../libsvm/libsvm.a
 	$(NVCC) $(LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
 
 clean:

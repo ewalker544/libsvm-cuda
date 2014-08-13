@@ -349,6 +349,7 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 		Qij = d_Qi[j];
 	} else {
 		Qij = cuda_evalQ(i, j);
+	    d_Qi[j] = Qij; // update cache
 	}
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
@@ -401,14 +402,11 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 		}
 	}
 
-	d_Qi[j] = Qij; // update cache
-	if (blockIdx.x == 0 && threadIdx.x == 0)
-		d_i_column = i; // this is the column we have in the cache
 }
 
 __global__ void cuda_update_gradient(int N)
 {
-	// int i = d_solver.x; 
+	int i = d_solver.x; 
 	int j = d_solver.y; 
 
 	int k = blockIdx.x * blockDim.x + threadIdx.x;
@@ -416,7 +414,12 @@ __global__ void cuda_update_gradient(int N)
 	if (k >= N)
 		return;
 
-	d_G[k] += (d_Qi[k] * d_delta_alpha_i + cuda_evalQ(j, k) * d_delta_alpha_j);
+	CValue_t Qik = d_Qi[k];
+	if (blockIdx.x == 0 && threadIdx.x == 0)
+		d_i_column = i; // this is the column we have in the cache
+
+	d_G[k] += (Qik* d_delta_alpha_i + cuda_evalQ(j, k) * d_delta_alpha_j);
+
 }
 
 __global__ void cuda_init_gradient(int start, int step, int N)
@@ -455,9 +458,9 @@ __device__ double atomicAdd(double * address, double val)
 }
 #endif
 
-__device__ GradValue_t device_gradient_computer(int i, int j)
+__device__ GradValue_t device_compute_gradient(int i, int j)
 {
-	if (!(d_alpha_status[i] == LOWER_BOUND) /*is_lower_bound(i)*/)
+	if (!(d_alpha_status[i] == LOWER_BOUND)) /* !is_lower_bound(i) */
 	{
 		return d_alpha[i] * cuda_evalQ(i, j);
 	}
@@ -479,7 +482,7 @@ __device__ __forceinline__ GradValue_t warpReduceSum(GradValue_t val)
 __device__ __forceinline__ GradValue_t blockReduceSum(GradValue_t val) 
 {
 #if __CUDA_ARCH__ >= 300
-	static __shared__ int shared[32]; // Shared mem for 32 partial sums
+	static __shared__ GradValue_t shared[32]; // Shared mem for 32 partial sums
 	int lane = threadIdx.x % warpSize;
 	int wid = threadIdx.x / warpSize;
 
@@ -507,19 +510,19 @@ __global__ void cuda_init_gradient_block2(int startj, int N)
 	for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 			i < N;
 			i += blockDim.x * gridDim.x) {
-		sum += device_gradient_computer(i, j);
+		sum += device_compute_gradient(i, j);
 	}
 
-	sum = warpReduceSum(sum);
-
-	if (threadIdx.x & (warpSize - 1) == 0) { 
-		atomicAdd(&d_G[j], sum);
-	}
-
-#if 0
+#ifdef BLOCK_ATOMIC_REDUCE
 	sum = blockReduceSum(sum);
 
 	if (threadIdx.x == 0) { 
+		atomicAdd(&d_G[j], sum);
+	}
+#else
+	sum = warpReduceSum(sum);
+
+	if (threadIdx.x & (warpSize - 1) == 0) { 
 		atomicAdd(&d_G[j], sum);
 	}
 #endif
@@ -564,7 +567,6 @@ void init_device_gradient2(int block_size, int startj, int stepj, int N)
 	dim3 block;
 	block.x = block_size; // number of threads in the ith dimension
 	block.y = 1; // number of threads per block in the jth dimension (one thread per block)
-	
 	cuda_init_gradient_block2 << <grid, block >> > (startj, N);
 	check_cuda_kernel_launch("fail in cuda_init_gradient_block2");
 }
