@@ -21,7 +21,7 @@
 #define _SVM_LRU_CACHE_H_
 #include "svm_defs.h"
 
-#define COLLECT_CACHE_STATS	1
+#define COLLECT_CACHE_STATS	0
 
 #define SERIALIZE(block) do {if (blockIdx.x == 0 && threadIdx.x == 0) {block;}} while(0)
 
@@ -180,8 +180,6 @@ __device__
 static void init_LRU_cache(CValue_t *dh_column_space, int space, int col_size)
 {
 	d_LRU_cache = new LRUList();
-
-	printf("Device: sizeof CacheNode = %d\n", sizeof(CacheNode));
 
 	int offset = 0;
 	while (space >= col_size) {

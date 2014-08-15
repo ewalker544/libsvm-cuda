@@ -16,7 +16,7 @@ using namespace std;
 
 enum { LOWER_BOUND = 0, UPPER_BOUND = 1, FREE = 2 };
 
-#ifdef USE_CONSTANT_SVM_NODE
+#if USE_CONSTANT_SVM_NODE
 __constant__ cuda_svm_node      *d_space;
 #else
 texture<float2, 1, cudaReadModeElementType> d_tex_space;
@@ -83,7 +83,7 @@ cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_s
 		fprintf(stderr, "Error copying to symbol d_x\n");
 		return err;
 	}
-#ifdef USE_CONSTANT_SVM_NODE
+#if USE_CONSTANT_SVM_NODE
 	err = cudaMemcpyToSymbol(d_space, &dh_space, sizeof(dh_space));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Error copying to symbol d_space\n");
@@ -153,7 +153,7 @@ cudaError_t update_rbf_variables(CValue_t *dh_x_square)
 
 void unbind_texture()
 {
-#ifndef USE_CONSTANT_SVM_NODE
+#if !USE_CONSTANT_SVM_NODE
 	cudaUnbindTexture(d_tex_space);
 #endif
 }
@@ -161,7 +161,7 @@ void unbind_texture()
 
 __device__ __forceinline__ cuda_svm_node get_col_value(int i)
 {
-#ifdef USE_CONSTANT_SVM_NODE
+#if USE_CONSTANT_SVM_NODE
 	return d_space[i];
 #else
 	return tex1Dfetch(d_tex_space, i);
@@ -434,7 +434,7 @@ __global__ void cuda_init_gradient(int start, int step, int N)
 	d_G[j] += acc;
 }
 
-#ifdef USE_DOUBLE_GRADIENT // needed if we are storing double gradient values
+#if USE_DOUBLE_GRADIENT // needed if we are storing double gradient values
 /**
 double version of atomicAdd
 */
@@ -507,7 +507,7 @@ __global__ void cuda_init_gradient_block2(int startj, int N)
 		sum += device_compute_gradient(i, j);
 	}
 
-#ifdef BLOCK_ATOMIC_REDUCE
+#if BLOCK_ATOMIC_REDUCE
 	sum = blockReduceSum(sum);
 
 	if (threadIdx.x == 0) { 

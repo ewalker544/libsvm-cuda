@@ -238,7 +238,7 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 
 	setup_LRU_cache(active_size);
 
-#ifdef DEBUG_CHECK
+#if DEBUG_CHECK
 	show_memory_usage(mem_size);
 #endif
 
@@ -341,7 +341,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			while (tmp->index != -1) {
 				x_space[j].x = static_cast<float>(tmp->index);
 				x_space[j].y = static_cast<float>(tmp->value);
-#ifdef DEBUG_VERIFY
+#if DEBUG_VERIFY
 				if (abs(tmp->value - x_space[j].y) > 1e-4) {
 					std::cerr << "WARNING!: sample space value truncated by "
 						<< abs(tmp->value - x_space[j].y) << std::endl;
