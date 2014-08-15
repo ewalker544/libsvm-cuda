@@ -554,7 +554,7 @@ void init_device_gradient2(int block_size, int startj, int stepj, int N)
 {
 	dim3 grid;
 	// the number of blocks in the ith dimension
-	grid.x = min((N + block_size-1) / block_size, 1024);
+	grid.x = std::min((N + block_size-1) / block_size, 1024);
 	// the number of blocks in the jth dimension == G_j that will be updated
 	grid.y = stepj; 
 

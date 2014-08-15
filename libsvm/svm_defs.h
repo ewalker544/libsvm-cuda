@@ -111,7 +111,7 @@ struct ALIGN(8) CacheNode {
 
 #define BLOCK_ATOMIC_REDUCE	0 // block-wide , instead of warp-wide, reduce with atomics (Kerpler)
 
-static inline void _check_cuda_return(const char *msg, cudaError_t err, char *file, int line)
+static inline void _check_cuda_return(const char *msg, cudaError_t err, const char *file, int line)
 {
 	if (err != cudaSuccess) {
 		std::cerr << "CUDA Error (" << file << ":" << line << "): ";

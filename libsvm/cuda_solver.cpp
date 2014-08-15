@@ -213,6 +213,7 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	int step; // Initialize step d_G entries at a time 
 	// NOTE: This can take awhile, so some devices may time out.  Adjust this value accordingly.
 	if (CUDA_ARCH >= 300) {
+	    // init_device_gradient2() throttles the number threads to a maximum of block_size * 1024
 	    step = active_size; 
 	} else {
 		step = 500;
