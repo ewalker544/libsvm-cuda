@@ -10,6 +10,7 @@ using namespace std;
 #include "math.h"
 #include "svm_device.h"
 #include "cuda_reducer.h"
+#include "svm_cache.h"
 
 #define DEVICE_EPS	0
 
@@ -43,28 +44,6 @@ __device__		GradValue_t		d_delta_alpha_j;
 
 __device__		int2			d_solver; // member x and y hold the selected i and j working set indices respectively
 __device__		int2			d_nu_solver; // member x and y hold the Gmaxp_idx and Gmaxn_idx indices respectively.  
-
-/********* CACHE IMPLEMENTATION **********/
-__device__		CValue_t		*d_Qi;
-__device__		int				d_i_column;
-
-cudaError_t setup_device_cache(CValue_t *dh_cache, int N)
-{
-	cudaError_t err;
-	err = cudaMemcpyToSymbol(d_Qi, &dh_cache, sizeof(dh_cache));
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Error copying to symbol d_Qi\n");
-		return err;
-	}
-
-	int state = -1;
-	err = cudaMemcpyToSymbol(d_i_column, &state, sizeof(state));
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Error copying to symbol d_i_column\n");
-		return err;
-	}
-	return err;
-}
 
 cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l)
 {
@@ -345,11 +324,14 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 		return;
 
 	CValue_t Qij;
-	if (d_i_column == i) { // reuse what we already have
-		Qij = d_Qi[j];
-	} else {
+	bool valid;
+	CValue_t *Qi = cache_get_Q(i, valid, STAGE_AREA_I); // staged for later use and update
+	if (valid) { // reuse what we already have
+		Qij = Qi[j];
+	}
+	else {
 		Qij = cuda_evalQ(i, j);
-	    d_Qi[j] = Qij; // update cache
+		Qi[j] = Qij;
 	}
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
@@ -406,7 +388,7 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 
 __global__ void cuda_update_gradient(int N)
 {
-	int i = d_solver.x; 
+	// int i = d_solver.x; Not needed because we just lookup the staging area
 	int j = d_solver.y; 
 
 	int k = blockIdx.x * blockDim.x + threadIdx.x;
@@ -414,11 +396,23 @@ __global__ void cuda_update_gradient(int N)
 	if (k >= N)
 		return;
 
-	CValue_t Qik = d_Qi[k];
-	if (blockIdx.x == 0 && threadIdx.x == 0)
-		d_i_column = i; // this is the column we have in the cache
+	CValue_t *Qi, *Qj;
+	CValue_t Qik, Qjk;
 
-	d_G[k] += (Qik* d_delta_alpha_i + cuda_evalQ(j, k) * d_delta_alpha_j);
+	Qi = cache_get_Stage(STAGE_AREA_I);
+	Qik = Qi[k];
+
+	bool valid;
+	Qj = cache_get_Q(j, valid, STAGE_AREA_J);
+	if (valid) {
+		Qjk = Qj[k];
+	}
+	else {
+		Qjk = cuda_evalQ(j, k);
+		Qj[k] = Qjk;
+	}
+
+	d_G[k] += (Qik* d_delta_alpha_i + Qjk * d_delta_alpha_j);
 
 }
 
@@ -782,6 +776,8 @@ __global__ void cuda_update_alpha_status()
 
 	device_update_alpha_status(i);
 	device_update_alpha_status(j);
+
+	cache_commit_Stages(i, j);
 }
 
 /*********** NU Solver ************/

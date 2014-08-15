@@ -99,6 +99,15 @@ cuda_svm_node.y == svm_node.value
 */
 typedef float2 cuda_svm_node;
 
+struct ALIGN(8) CacheNode {
+	struct CacheNode *next; // next node in LRU list
+	struct CacheNode *prev; // previous node in LRU list
+	int col_idx;   // column that this buffer currently represents
+	int stage_idx; // column that this buffer is being modifed for
+	bool used; // cache node is currently being read
+	CValue_t *column; // buffer for column "col_idx", unless it is being staged
+};
+
 #define TAU 1e-12
 
 static inline void _check_cuda_return(const char *msg, cudaError_t err, char *file, int line)

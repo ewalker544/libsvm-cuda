@@ -159,8 +159,9 @@ protected:
 	CudaArray_t<char> dh_alpha_status; 	
 
 	/********** CACHE ***********/
-	CudaArray_t<CValue_t> dh_cache;
 	double cache_size; // cache size as set by parameter
+	CudaArray_t<CValue_t> dh_column_space;
+	CudaArray_t<CacheNode*> dh_columns;
 
 	/**
 	The following arrays are required by the reducers
@@ -176,7 +177,7 @@ private:
 	/**
 	Initializes cache
 	**/
-	void setup_cache(int active_size);
+	void setup_LRU_cache(int active_size);
 
 	/**
 	Initializes the cuda device memory array

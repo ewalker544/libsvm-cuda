@@ -99,7 +99,8 @@ void unbind_texture();
 void init_device_gradient1(int block_size, int startj, int stepj, int N);
 void init_device_gradient2(int block_size, int startj, int stepj, int N);
 
-/***** CACHE *******/
-cudaError_t setup_device_cache(CValue_t *, int);
+/***** LRU Column Cache *******/
+void show_device_cache_stats();
+void setup_device_LRU_cache(CacheNode **dh_columns, CValue_t * dh_column_space, int space, int col_size);
 
 #endif
