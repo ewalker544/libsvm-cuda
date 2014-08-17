@@ -122,6 +122,7 @@ protected:
 	Properties of this CUDA solver
 	*/
 	int CUDA_ARCH;
+	int maxGridSize;
 	int num_blocks;
 	int block_size;
 

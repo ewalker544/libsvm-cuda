@@ -213,8 +213,7 @@ void CudaSolver::setup_solver(const SChar_t *y, double *G, double *alpha, char *
 	int step; // Initialize step d_G entries at a time 
 	// NOTE: This can take awhile, so some devices may time out.  Adjust this value accordingly.
 	if (CUDA_ARCH >= 300) {
-	    // init_device_gradient2() throttles the number threads to a maximum of block_size * 1024
-	    step = active_size; 
+	    step = std::min(maxGridSize, active_size); 
 	} else {
 		step = 500;
 	}
@@ -289,6 +288,7 @@ void CudaSolver::setup_LRU_cache(int active_size)
 	int space = static_cast<int>(cache_size * (1 << 20)); // megabytes
 	int num_elements = space / sizeof(CValue_t); // compute the number of CValue_t elements to cache
 	int num_columns = (num_elements + active_size-1) / active_size; // compute ceiling of number of columns to cache
+	num_columns = std::max(5, num_columns); // cache at least 5 columns
 	space = num_columns * active_size; // re-compute the number of bytes owe want to cache
 	dh_column_space = make_unique_cuda_array<CValue_t>(space);
 	dh_columns = make_unique_cuda_array<CacheNode*>(active_size);
@@ -325,7 +325,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	}
 	dbgprintf(true, "load_problem_parameters: %d elements need to be moved to device\n", elements);
 
-#define TRANSFER_CHUNK_SIZE		1000000
+#define TRANSFER_CHUNK_SIZE		100000000
 	/**
 	NOTE: cuda_svm_node is typedef to float2
 	float2.x == svm_node.index
@@ -413,6 +413,7 @@ CudaSolver::CudaSolver(const svm_problem &prob, const svm_parameter &param, bool
 		exit(1);
 	}
 	CUDA_ARCH = deviceProp.major * 100 + deviceProp.minor * 10;
+	maxGridSize = deviceProp.maxGridSize[1]; // store the maximum grid size for dimension 1
 
 	startup_time = clock();
 	dbgprintf(true, "CudaSolver: GO!\n"); // DEBUG
