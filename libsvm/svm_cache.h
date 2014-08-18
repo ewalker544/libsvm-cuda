@@ -246,6 +246,9 @@ static CValue_t *cache_get_Q(int col, bool &valid, StageArea_t stage_area)
 		SERIALIZE(
 			n->stage_idx = col; // mark this cache node as being staged (new data will be written to it) for column col
 			d_staging_area[stage_area] = n; // put this in the staging area for later access
+			if (n->col_idx != -1)			// remove from column table
+				d_columns[n->col_idx] = NULL;
+			n->col_idx = col;				// remember where I am now assigned too
 		);
 
 		cache_miss();
@@ -255,20 +258,22 @@ static CValue_t *cache_get_Q(int col, bool &valid, StageArea_t stage_area)
 }
 
 __device__ 
-static CValue_t *cache_get_Stage(StageArea_t stage_area)
+static CValue_t *cache_get_Stage(int i, StageArea_t stage_area)
 {
-	return d_staging_area[stage_area]->column;
+	if (d_staging_area[stage_area] && d_staging_area[stage_area]->col_idx == i)
+		return d_staging_area[stage_area]->column;
+	else
+		return NULL;
 }
 
 __device__ __forceinline__ 
 static void cache_commit_StageArea(int col, StageArea_t stage_area) 
 {
 	CacheNode *n = d_staging_area[stage_area];
+	if (n == NULL || n->col_idx != col)
+		return ;
 
 	d_LRU_cache->remove(n); // remove n from its position on the LRU list
-
-	if (n->col_idx != -1 && n->col_idx != col) // if this was used by a different column
-		d_columns[n->col_idx] = NULL; // reset its entry in the table
 
 	n->col_idx = col; // reassign it to a new column 
 	n->used = false; // no longer being read

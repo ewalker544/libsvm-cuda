@@ -28,7 +28,11 @@ void launch_cuda_setup_QD(size_t num_blocks, size_t block_size, int N);
 
 void launch_cuda_compute_obj_diff(size_t num_blocks, size_t block_size, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N);
 
+void launch_cuda_compute_obj_diff_SVR(size_t num_blocks, size_t block_size, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N);
+
 void launch_cuda_update_gradient(size_t num_blocks, size_t block_size, int N);
+
+void launch_cuda_update_gradient_SVR(size_t num_blocks, size_t block_size, int N);
 
 void launch_cuda_init_gradient(size_t num_blocks, size_t block_size, int start, int step, int N);
 
@@ -82,21 +86,30 @@ cuda_find_nu_gmax:
 shared memory requirement: block_size * (4 * sizeof(GradValue_t) + 2 * sizeof(int) )
 */
 void launch_cuda_find_nu_gmax(size_t num_blocks, size_t block_size, size_t share_mem_size, find_nu_gmax_param param, int N);
+
 /**
 cuda_find_nu_min_idx:
 shared memory requirement: block_size * (sizeof(CValue_t) + sizeof(int))
 */
 void launch_cuda_find_nu_min_idx(size_t num_blocks, size_t block_size, size_t share_mem_size, CValue_t *obj_diff_array, int *obj_diff_indx, CValue_t *result_obj_min, int *result_indx, int N);
+
 void launch_cuda_compute_nu_obj_diff(size_t num_blocks, size_t block_size, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_indx, int N);
-void launch_cuda_prep_nu_gmax(size_t num_blocks, size_t block_size, GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2,
-	int *dh_gmaxp_idx, int *dh_gmaxn_idx, int N);
+
+void launch_cuda_compute_nu_obj_diff_SVR(size_t num_blocks, size_t block_size, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_indx, int N);
+
+void launch_cuda_prep_nu_gmax(size_t num_blocks, size_t block_size, GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2, int *dh_gmaxp_idx, int *dh_gmaxn_idx, int N);
 
 /***** Device setup functions ********/
 cudaError_t update_solver_variables(SChar_t *dh_y, CValue_t *dh_QD, GradValue_t *dh_G, GradValue_t *dh_alpha, char *dh_alpha_status, double Cp, double Cn);
+
 cudaError_t update_rbf_variables(CValue_t *dh_x_square);
+
 cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l, uint32_t *dh_sparse_vector, int max_bytes);
+
 void unbind_texture();
+
 void init_device_gradient1(int block_size, int startj, int stepj, int N);
+
 void init_device_gradient2(int block_size, int startj, int stepj, int N);
 
 /***** LRU Column Cache *******/

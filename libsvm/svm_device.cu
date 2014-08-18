@@ -436,25 +436,8 @@ __global__ void cuda_find_min_idx(CValue_t *obj_diff_array, int *obj_diff_indx, 
 		d_solver.y = func.return_idx();
 }
 
-
-__global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
+__device__ void device_compute_obj_diff(int i, int j, CValue_t Qij, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx)
 {
-	int i = d_solver.x;
-
-	int j = blockDim.x * blockIdx.x + threadIdx.x;
-	if (j >= N)
-		return;
-
-	CValue_t Qij;
-	bool valid;
-	CValue_t *Qi = cache_get_Q(i, valid, STAGE_AREA_I); // staged for later use and update
-	if (valid) { // reuse what we already have
-		Qij = Qi[j];
-	}
-	else {
-		Qij = cuda_evalQ(i, j);
-		Qi[j] = Qij;
-	}
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
 	result_indx[j] = -1;
@@ -508,34 +491,128 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 
 }
 
-__global__ void cuda_update_gradient(int N)
+__global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
 {
-	// int i = d_solver.x; Not needed because we just lookup the staging area
-	int j = d_solver.y; 
+	int i = d_solver.x;
 
-	int k = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (k >= N)
+	int j = blockDim.x * blockIdx.x + threadIdx.x;
+	if (j >= N)
 		return;
 
-	CValue_t *Qi, *Qj;
-	CValue_t Qik, Qjk;
-
-	Qi = cache_get_Stage(STAGE_AREA_I);
-	Qik = Qi[k];
-
+	CValue_t Qij;
 	bool valid;
-	Qj = cache_get_Q(j, valid, STAGE_AREA_J);
-	if (valid) {
-		Qjk = Qj[k];
+	CValue_t *Qi = cache_get_Q(i, valid, STAGE_AREA_I); // staged for later use and update
+	if (valid) { // reuse what we already have
+		Qij = Qi[j];
 	}
 	else {
-		Qjk = cuda_evalQ(j, k);
-		Qj[k] = Qjk;
+		Qij = cuda_evalQ(i, j);
+		Qi[j] = Qij;
 	}
 
-	d_G[k] += (Qik* d_delta_alpha_i + Qjk * d_delta_alpha_j);
+	device_compute_obj_diff(i, j, Qij, Gmax, dh_obj_diff_array, result_indx);
 
+}
+
+__global__ void cuda_compute_obj_diff_SVR(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
+{
+	int i = d_solver.x;
+
+	int j = blockDim.x * blockIdx.x + threadIdx.x;
+	if (j >= N)
+		return;
+
+	CValue_t Qij1, Qij2;
+	bool valid;
+	CValue_t *Qi = cache_get_Q(i, valid, STAGE_AREA_I); // staged for later use and update
+	if (valid) { // reuse what we already have
+		Qij1 = Qi[j];
+		Qij2 = Qi[j + d_l];
+	}
+	else {
+		Qij1 = cuda_evalQ(i, j);
+		Qi[j] = Qij1;
+
+		Qij2 = -Qij1;
+		Qi[j + d_l] = Qij2;
+	}
+
+	device_compute_obj_diff(i, j, Qij1, Gmax, dh_obj_diff_array, result_indx);
+	device_compute_obj_diff(i, j + d_l, Qij2, Gmax, dh_obj_diff_array, result_indx);
+}
+
+__global__ void cuda_update_gradient(int N)
+{
+	int i = d_solver.x; // selected i index
+	int j = d_solver.y; // selected j index
+
+	for (int k = blockIdx.x * blockDim.x + threadIdx.x; 
+		k < N;
+		k += blockDim.x * gridDim.x) {
+
+		CValue_t *Qi, *Qj;
+		CValue_t Qik, Qjk;
+
+		Qi = cache_get_Stage(i, STAGE_AREA_I);
+		if (Qi) {
+			Qik = Qi[k];
+		}
+		else {
+			Qik = cuda_evalQ(i, k);
+		}
+
+		bool valid;
+		Qj = cache_get_Q(j, valid, STAGE_AREA_J);
+		if (valid) {
+			Qjk = Qj[k];
+		}
+		else {
+			Qjk = cuda_evalQ(j, k);
+			Qj[k] = Qjk;
+		}
+
+		d_G[k] += (Qik* d_delta_alpha_i + Qjk * d_delta_alpha_j);
+	}
+}
+
+__global__ void cuda_update_gradient_SVR(int N)
+{
+	int i = d_solver.x; // selected i index
+	int j = d_solver.y; // selected j index
+
+	for (int k = blockIdx.x * blockDim.x + threadIdx.x; 
+		k < N;
+		k += blockDim.x * gridDim.x) {
+
+		CValue_t *Qi, *Qj;
+		CValue_t Qik1, Qik2, Qjk1, Qjk2;
+
+		Qi = cache_get_Stage(i, STAGE_AREA_I);
+		if (Qi) {
+			Qik1 = Qi[k];
+			Qik2 = Qi[k + d_l];
+		} else {
+			Qik1 = cuda_evalQ(i, k);
+			Qik2 = cuda_evalQ(i, k + d_l);
+		}
+
+		bool valid;
+		Qj = cache_get_Q(j, valid, STAGE_AREA_J);
+		if (valid) {
+			Qjk1 = Qj[k];
+			Qjk2 = Qj[k + d_l];
+		}
+		else {
+			Qjk1 = cuda_evalQ(j, k);
+			Qj[k] = Qjk1;
+
+			Qjk2 = -Qjk1;
+			Qj[k + d_l] = Qjk2;
+		}
+
+		d_G[k] += (Qik1 * d_delta_alpha_i + Qjk1 * d_delta_alpha_j);
+		d_G[k + d_l] += (Qik2 * d_delta_alpha_i + Qjk2 * d_delta_alpha_j);
+	}
 }
 
 __global__ void cuda_init_gradient(int start, int step, int N)
@@ -942,14 +1019,8 @@ __global__ void cuda_prep_nu_gmax(GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, 
 	}
 }
 
-__global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+__device__ void device_compute_nu_obj_diff(int ip, int in, int j, CValue_t Qipj, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx)
 {
-	int ip = d_nu_solver.x;
-	int in = d_nu_solver.y;
-
-	int j = blockDim.x * blockIdx.x + threadIdx.x;
-	if (j >= N)
-		return;
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
 	result_idx[j] = -1;
@@ -960,7 +1031,7 @@ __global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, C
 			GradValue_t grad_diff = Gmaxp + d_G[j];
 			if (grad_diff > DEVICE_EPS) // original: grad_diff > 0
 			{
-				CValue_t quad_coef = d_QD[ip] + d_QD[j] - 2.0 * cuda_evalQ(ip, j);
+				CValue_t quad_coef = d_QD[ip] + d_QD[j] - 2.0 * Qipj;
 				CValue_t obj_diff = CVALUE_MAX;
 
 				if (quad_coef > 0) {
@@ -1003,6 +1074,57 @@ __global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, C
 
 }
 
+__global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+{
+	int ip = d_nu_solver.x;
+	int in = d_nu_solver.y;
+
+	int j = blockDim.x * blockIdx.x + threadIdx.x;
+	if (j >= N)
+		return;
+
+	CValue_t Qipj;
+	bool valid;
+	CValue_t *Qip = cache_get_Q(ip, valid, STAGE_AREA_I); // staged for later use and update
+	if (valid) { // reuse what we already have
+		Qipj = Qip[j];
+	}
+	else {
+		Qipj = cuda_evalQ(ip, j);
+		Qip[j] = Qipj;
+	}
+
+	device_compute_nu_obj_diff(ip, in, j, Qipj, Gmaxp, Gmaxn, dh_obj_diff_array, result_idx);
+}
+
+__global__ void cuda_compute_nu_obj_diff_SVR(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+{
+	int ip = d_nu_solver.x;
+	int in = d_nu_solver.y;
+
+	int j = blockDim.x * blockIdx.x + threadIdx.x;
+	if (j >= N)
+		return;
+
+	CValue_t Qipj1, Qipj2;
+	bool valid;
+	CValue_t *Qip = cache_get_Q(ip, valid, STAGE_AREA_I); // staged for later use and update
+	if (valid) { // reuse what we already have
+		Qipj1 = Qip[j];
+		Qipj2 = Qip[j + d_l];
+	}
+	else {
+		Qipj1 = cuda_evalQ(ip, j);
+		Qip[j] = Qipj1;
+
+		Qipj2 = -Qipj1;
+		Qip[j + d_l] = Qipj2;
+	}
+
+
+	device_compute_nu_obj_diff(ip, in, j, Qipj1, Gmaxp, Gmaxn, dh_obj_diff_array, result_idx);
+	device_compute_nu_obj_diff(ip, in, j + d_l, Qipj2, Gmaxp, Gmaxn, dh_obj_diff_array, result_idx);
+}
 
 
 __global__ void cuda_find_nu_gmax(find_nu_gmax_param param, int N)
@@ -1053,9 +1175,19 @@ void launch_cuda_compute_obj_diff(size_t num_blocks, size_t block_size, GradValu
 	cuda_compute_obj_diff << <num_blocks, block_size >> > (Gmax, dh_obj_diff_array, result_idx, N);
 }
 
+void launch_cuda_compute_obj_diff_SVR(size_t num_blocks, size_t block_size, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+{
+	cuda_compute_obj_diff_SVR << <num_blocks, block_size >> > (Gmax, dh_obj_diff_array, result_idx, N);
+}
+
 void launch_cuda_update_gradient(size_t num_blocks, size_t block_size, int N)
 {
 	cuda_update_gradient << <num_blocks, block_size >> > (N);
+}
+
+void launch_cuda_update_gradient_SVR(size_t num_blocks, size_t block_size, int N)
+{
+	cuda_update_gradient_SVR << <num_blocks, block_size >> > (N);
 }
 
 void launch_cuda_init_gradient(size_t num_blocks, size_t block_size, int start, int step, int N)
@@ -1101,6 +1233,11 @@ void launch_cuda_find_nu_gmax(size_t num_blocks, size_t block_size, size_t share
 void launch_cuda_compute_nu_obj_diff(size_t num_blocks, size_t block_size, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
 {
 	cuda_compute_nu_obj_diff << <num_blocks, block_size >> > (Gmaxp, Gmaxn, dh_obj_diff_array, result_idx, N);
+}
+
+void launch_cuda_compute_nu_obj_diff_SVR(size_t num_blocks, size_t block_size, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+{
+	cuda_compute_nu_obj_diff_SVR << <num_blocks, block_size >> > (Gmaxp, Gmaxn, dh_obj_diff_array, result_idx, N);
 }
 
 void launch_cuda_prep_nu_gmax(size_t num_blocks, size_t block_size, GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2,

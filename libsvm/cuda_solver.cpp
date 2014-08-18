@@ -131,8 +131,7 @@ void CudaSolver::find_launch_parameters(int &num_blocks, int &block_size, int N)
 	}
 
 	block_size = bsize;
-	num_blocks = N / block_size;
-	if (N % block_size != 0) ++num_blocks;
+	num_blocks = (N + block_size - 1) / block_size;
 }
 
 void CudaSolver::init_memory_arrays(int l) 
@@ -494,7 +493,14 @@ void CudaSolver::select_working_set_j(GradValue_t Gmax, int l)
 {
 	logtrace("TRACE: select_working_set_j: num_blocks=%d block_size=%d\n", num_blocks, block_size);
 
-	launch_cuda_compute_obj_diff(num_blocks, block_size, Gmax, &dh_obj_diff_array[0], &dh_obj_diff_idx[0], l);
+	if (svm_type == EPSILON_SVR) { 
+		// for SVR we only need to compute for half the working set, because the other half is symmetric
+		int nblocks = (num_blocks + 1) / 2;
+		launch_cuda_compute_obj_diff_SVR(nblocks, block_size, Gmax, &dh_obj_diff_array[0], &dh_obj_diff_idx[0], l/2);
+	}
+	else {
+		launch_cuda_compute_obj_diff(num_blocks, block_size, Gmax, &dh_obj_diff_array[0], &dh_obj_diff_idx[0], l);
+	}
 	check_cuda_kernel_launch("fail in cuda_compute_obj_diff");
 
 	logtrace("TRACE: select_working_set_j: starting cross_block_reducer\n");
@@ -537,7 +543,14 @@ int CudaSolver::select_working_set(int &out_i, int &out_j, int l)
 void CudaSolver::update_gradient(int l)
 {
 	logtrace("TRACE: update_gradient: l = %d\n", l);
-	launch_cuda_update_gradient(num_blocks, block_size, l);
+	if (svm_type == EPSILON_SVR || svm_type == NU_SVR) { 
+		// for SVR we only need to compute half the working set, because the other half is symmetric
+		int nblocks = (num_blocks + 1) / 2;
+		launch_cuda_update_gradient_SVR(nblocks, block_size, l / 2);
+	}
+	else {
+		launch_cuda_update_gradient(num_blocks, block_size, l);
+	}
 	check_cuda_kernel_launch("fail in cuda_update_gradient");
 }
 
