@@ -26,6 +26,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <cfloat>
+#include <stdint.h>
+
+const double libsvm_cuda_version = 0.318;
 
 #ifdef __CUDACC__
 #define ALIGN(x)  __align__(x)
@@ -44,7 +47,7 @@
 #endif
 #endif
 
-#define USE_CONSTANT_SVM_NODE 0 // use constant memory instead of texture
+#define USE_LIBSVM_SPARSE_FORMAT 0 // for enabling the LIBSVM sparse vector format
 #define DEBUG_VERIFY 	0	// for verifying ... more critical than debugging
 #define DEBUG_CHECK 	0	// for debugging
 #define DEBUG_TRACE 	0 	// for tracing calls
@@ -92,11 +95,15 @@ typedef float GradValue_t;
 #define GRADVALUE_MAX FLT_MAX
 #endif
 
+#if USE_LIBSVM_SPARSE_FORMAT
 /**
-cuda_svm_node.x == svm_node.index
-cuda_svm_node.y == svm_node.value
-*/
+ * cuda_svm_node.x == svm_node.value
+ * cuda_svm_node.y == svm_node.index
+ * */
 typedef float2 cuda_svm_node;
+#else
+typedef float1 cuda_svm_node;
+#endif
 
 struct ALIGN(8) CacheNode {
 	struct CacheNode *next; // next node in LRU list
@@ -106,6 +113,8 @@ struct ALIGN(8) CacheNode {
 	bool used; // cache node is currently being read
 	CValue_t *column; // buffer for column "col_idx", unless it is being staged
 };
+
+#define WORD_SIZE 	32
 
 #define TAU 1e-12
 

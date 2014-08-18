@@ -16,12 +16,23 @@ using namespace std;
 
 enum { LOWER_BOUND = 0, UPPER_BOUND = 1, FREE = 2 };
 
-#if USE_CONSTANT_SVM_NODE
-__constant__ cuda_svm_node      *d_space;
+#if USE_LIBSVM_SPARSE_FORMAT
+texture<float2, 1, cudaReadModeElementType> 	d_tex_space;
 #else
-texture<float2, 1, cudaReadModeElementType> d_tex_space;
+texture<float1, 1, cudaReadModeElementType> 	d_tex_space;
 #endif
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+texture<uint32_t, 1, cudaReadModeElementType> 	d_tex_sparse_vector;
+__constant__	int				d_max_words;
+#endif
+
+#if USE_CONSTANT_INDEX
 __constant__	int				*d_x;
+#else
+texture<int, 1, cudaReadModeElementType> 		d_tex_x;
+#endif
+
 __device__		int				d_kernel_type;	// enum { LINEAR, POLY, RBF, SIGMOID, PRECOMPUTED }; /* kernel_type */
 __device__		int				d_svm_type;		// enum { C_SVC, NU_SVC, ONE_CLASS, EPSILON_SVR, NU_SVR };	/* svm_type */
 __constant__	double			d_gamma;		// rbf, poly, and sigmoid kernel
@@ -45,7 +56,7 @@ __device__		GradValue_t		d_delta_alpha_j;
 __device__		int2			d_solver; // member x and y hold the selected i and j working set indices respectively
 __device__		int2			d_nu_solver; // member x and y hold the Gmaxp_idx and Gmaxn_idx indices respectively.  
 
-cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l)
+cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l, uint32_t *dh_sparse_vector, int max_words)
 {
 	cudaError_t err;
 	err = cudaMemcpyToSymbol(d_l, &l, sizeof(l));
@@ -78,20 +89,39 @@ cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_s
 		fprintf(stderr, "Error with copying to symbol d_degree\n");
 		return err;
 	}
+
+#if USE_CONSTANT_INDEX
 	err = cudaMemcpyToSymbol(d_x, &dh_x, sizeof(dh_x));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Error copying to symbol d_x\n");
 		return err;
 	}
-#if USE_CONSTANT_SVM_NODE
-	err = cudaMemcpyToSymbol(d_space, &dh_space, sizeof(dh_space));
+#else
+	err = cudaBindTexture(0, d_tex_x, dh_x, l*sizeof(int));
 	if (err != cudaSuccess) {
-		fprintf(stderr, "Error copying to symbol d_space\n");
+		fprintf(stderr, "Error binding to d_tex_space\n");
 		return err;
 	}
-#else
-	err = cudaBindTexture(0, d_tex_space, dh_space, dh_space_size);
 #endif
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+	err = cudaBindTexture(NULL, d_tex_sparse_vector, dh_sparse_vector, l * max_words * sizeof(uint32_t));
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Error binding to texture d_tex_sparse_vector\n");
+	}
+	err = cudaMemcpyToSymbol(d_max_words, &max_words, sizeof(max_words));
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Error copying to symbol d_max_words\n");
+		return err;
+	}
+#endif
+
+	err = cudaBindTexture(0, d_tex_space, dh_space, dh_space_size);
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Error binding to d_tex_space\n");
+		return err;
+	}
+
 	return err;
 }
 
@@ -153,48 +183,60 @@ cudaError_t update_rbf_variables(CValue_t *dh_x_square)
 
 void unbind_texture()
 {
-#if !USE_CONSTANT_SVM_NODE
 	cudaUnbindTexture(d_tex_space);
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+	cudaUnbindTexture(d_tex_sparse_vector);
+#endif
+
+#if !USE_CONSTANT_INDEX
+	cudaUnbindTexture(d_tex_x);
 #endif
 }
 
 
 __device__ __forceinline__ cuda_svm_node get_col_value(int i)
 {
-#if USE_CONSTANT_SVM_NODE
-	return d_space[i];
-#else
 	return tex1Dfetch(d_tex_space, i);
+}
+
+__device__ __forceinline__ int get_x(int i)
+{
+#if USE_CONSTANT_INDEX
+	return d_x[i];
+#else
+	return tex1Dfetch(d_tex_x, i);
 #endif
 }
 
+#if USE_LIBSVM_SPARSE_FORMAT
 /**
 Compute dot product of 2 vectors
 */
 __device__ CValue_t dot(int i, int j)
 {
-	int i_col = d_x[i];
-	int j_col = d_x[j];
+	int i_col = get_x(i);
+	int j_col = get_x(j);
 	/**
 	remember: 
-	cuda_svm_node.x == svm_node.index
-	cuda_svm_node.y == svm_node.value
+	cuda_svm_node.y == svm_node.index
+	cuda_svm_node.x == svm_node.value
 	*/
 	cuda_svm_node x = get_col_value(i_col);
 	cuda_svm_node y = get_col_value(j_col);
 
 	double sum = 0;
-	while (x.x != -1 && y.x != -1)
+	while (x.y != -1 && y.y != -1)
 	{
-		if (x.x == y.x)
+		if (x.y == y.y)
 		{
-			sum += x.y * y.y;
+			sum += x.x * y.x;
 			x = get_col_value(++i_col);
 			y = get_col_value(++j_col);
 		}
 		else
 		{
-			if (x.x > y.x) {
+			if (x.y > y.y) {
 				y = get_col_value(++j_col);
 			}
 			else {
@@ -204,6 +246,86 @@ __device__ CValue_t dot(int i, int j)
 	}
 	return sum;
 }
+#else
+
+__device__ __forceinline__ uint32_t least_significant_bit(uint32_t x, uint32_t &x_nobit)
+{
+	x_nobit = x & (x - 1);
+	return x & ~x_nobit;
+}
+
+/**
+  Compute dot product of 2 vectors
+  */
+__device__ CValue_t dot(int i, int j)
+{
+	int i_off = get_x(i);
+	int j_off = get_x(j);
+	size_t i_poffset = i * d_max_words;
+	size_t j_poffset = j * d_max_words;
+	/**
+		remember:
+		cuda_svm_node.x == svm_node.value
+	*/
+	uint32_t x_pattern, y_pattern;
+	double sum = 0;
+	for (int k1 = 0; k1 < d_max_words; k1++) {
+		x_pattern = tex1Dfetch(d_tex_sparse_vector, i_poffset++); // fetch the index mask for i
+		y_pattern = tex1Dfetch(d_tex_sparse_vector, j_poffset++); // fetch the index mask for j
+
+		if (x_pattern == 0 && y_pattern == 0)
+			continue;
+
+		uint32_t bx = 0, by = 0;
+		uint32_t xbit = 0, ybit = 0;
+
+		if (x_pattern > 0) {
+			xbit = least_significant_bit(x_pattern, bx); // get the first least significant bit in x
+		}
+		if (y_pattern > 0) {
+			ybit = least_significant_bit(y_pattern, by); // get the first least significant bit in y
+		}
+
+		do {
+			bool move_x = false, move_y = false;
+			if (xbit == ybit) { // both bits are in the same position
+				// index matches! hence we multiply
+				cuda_svm_node x = get_col_value(i_off);
+				cuda_svm_node y = get_col_value(j_off);
+				sum += x.x * y.x;
+
+				move_x = true;
+				move_y = true;
+			}
+			else if (y_pattern == 0) {
+				move_x = true;
+			}
+			else if (x_pattern == 0) {
+				move_y = true;
+			}
+			else if (ybit < xbit) {
+				move_y = true;
+			}
+			else if (xbit < ybit) {
+				move_x = true;
+			}
+
+			if (move_x) {
+				i_off++;
+				x_pattern = bx;
+				xbit = least_significant_bit(x_pattern, bx); // move to the next bit in x
+			}
+			if (move_y) {
+				j_off++;
+				y_pattern = by;
+				ybit = least_significant_bit(y_pattern, by); // move to the next bit in y
+			}
+		} while (x_pattern > 0 || y_pattern > 0);
+	}
+	return sum;
+}
+
+#endif
 
 __device__ CValue_t device_kernel_rbf(const int &i, const int &j)
 {
@@ -228,10 +350,10 @@ __device__ CValue_t device_kernel_linear(const int &i, const int &j)
 
 __device__ CValue_t device_kernel_precomputed(const int &i, const int &j)
 {
-	int i_col = d_x[i];
-	int j_col = d_x[j];
-	int offset = static_cast<int>(get_col_value(j_col).y);
-	return get_col_value(i_col + offset).y;
+	int i_col = get_x(i);
+	int j_col = get_x(j);
+	int offset = static_cast<int>(get_col_value(j_col).x);
+	return get_col_value(i_col + offset).x;
 	// return x[i][(int)(x[j][0].value)].value;
 }
 

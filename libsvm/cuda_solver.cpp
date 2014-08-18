@@ -313,16 +313,29 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	cache_size = param.cache_size;
 
 	/** allocate space for support vectors */
+#if !USE_LIBSVM_SPARSE_FORMAT
+	int max_dim = -1;
+#endif
 	int elements = 0;
 	for (int i = 0; i < l; ++i)
 	{
 		const svm_node *tmp = x[i];
 		while (tmp->index != -1) { // row terminator
+#if !USE_LIBSVM_SPARSE_FORMAT
+			max_dim = std::max(max_dim, tmp->index); // index always starts from "1"
+#endif
 			++elements; // count each row svm_node element
 			++tmp;
 		}
 		++elements; // count the row terminating svm_node
 	}
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+	int max_words = (max_dim + WORD_SIZE-1) / WORD_SIZE;
+
+	dh_sparse_vector = make_unique_cuda_array<uint32_t>(l*max_words);
+#endif
+
 	dbgprintf(true, "load_problem_parameters: %d elements need to be moved to device\n", elements);
 
 #define TRANSFER_CHUNK_SIZE		100000000
@@ -333,21 +346,33 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	*/
 	dh_space = make_unique_cuda_array<cuda_svm_node>(elements);
 	{
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+		std::unique_ptr<uint32_t[]> h_sparse_vector(new uint32_t[l*max_words]);
+		memset(&h_sparse_vector[0], 0, l*max_words*sizeof(uint32_t));
+#endif
+
 		int next_loc = 0; // index in dh_space to move elements too
 		int j = 0; // index for x_space
 		int transfer_chunk = std::min(TRANSFER_CHUNK_SIZE, elements);
 		std::unique_ptr<cuda_svm_node[]> x_space(new cuda_svm_node[transfer_chunk]); 
 		for (int i = 0; i < l; ++i) {
+#if !USE_LIBSVM_SPARSE_FORMAT
+			size_t pattern_offset = i * max_words;
+#endif
 			const svm_node *tmp = x[i];
 			while (tmp->index != -1) {
-				x_space[j].x = static_cast<float>(tmp->index);
-				x_space[j].y = static_cast<float>(tmp->value);
-#if DEBUG_VERIFY
-				if (abs(tmp->value - x_space[j].y) > 1e-4) {
-					std::cerr << "WARNING!: sample space value truncated by "
-						<< abs(tmp->value - x_space[j].y) << std::endl;
-				}
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+				int idx = tmp->index-1; // index always starts from 1
+				h_sparse_vector[pattern_offset + idx / WORD_SIZE] |= (1 << (idx%WORD_SIZE)); 
 #endif
+
+#if USE_LIBSVM_SPARSE_FORMAT
+				x_space[j].y = static_cast<float>(tmp->index); // in the LIBSVM SPARSE format, we send over the index
+#endif
+				x_space[j].x = static_cast<float>(tmp->value);
+
 				++tmp;
 				++j;
 				if (j == transfer_chunk) {
@@ -360,7 +385,13 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 					j = 0; // reset index
 				}
 			}
+
+#if USE_LIBSVM_SPARSE_FORMAT
+			x_space[j++].y = -1;
+#else
 			x_space[j++].x = -1;
+#endif
+
 			if (j == transfer_chunk) {
 				// x_space is full, time to transfer to device
 				dbgprintf(true, "load_problem_parameters: transferring %d bytes (%d elements) to starting index %d\n",
@@ -377,6 +408,12 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			err = cudaMemcpy(&dh_space[next_loc], &x_space[0], j * sizeof(cuda_svm_node), cudaMemcpyHostToDevice);
 			check_cuda_return("fail to copy to device for dh_space", err);
 		}
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+		err = cudaMemcpy(&dh_sparse_vector[0], &h_sparse_vector[0], l * max_words * sizeof(uint32_t), cudaMemcpyHostToDevice);
+		check_cuda_return("fail to copy to device for dh_sparse_vector", err);
+#endif
+
 	}
 
 	dbgprintf(true, "load_problem_parameters: setting up dh_x\n");
@@ -397,7 +434,11 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		check_cuda_return("fail to copy to device for dh_x", err);
 	}
 
-	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l);
+#if USE_LIBSVM_SPARSE_FORMAT
+	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l, NULL, 0);
+#else
+	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l, &dh_sparse_vector[0], max_words);
+#endif
 	check_cuda_return("fail to setup parameter constants", err);
 }
 
