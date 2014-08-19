@@ -816,7 +816,7 @@ __global__ void cuda_find_gmax(find_gmax_param param, int N, bool debug)
 
 	device_block_reducer(func, N); // Template function defined in CudaReducer.h
 
-	if (blockIdx.x == 0)
+	if (blockIdx.x == 0 && threadIdx.x == 0)
 		d_solver.x = func.return_idx();
 }
 
@@ -1156,7 +1156,7 @@ __global__ void cuda_find_nu_gmax(find_nu_gmax_param param, int N)
 
 	device_block_reducer(func, N);
 
-	if (blockIdx.x == 0) {
+	if (blockIdx.x == 0 && threadIdx.x == 0) {
 		int ip, in;
 		func.return_idx(ip, in);
 		d_nu_solver.x = ip;
