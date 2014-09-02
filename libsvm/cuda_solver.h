@@ -160,13 +160,16 @@ protected:
 	CudaArray_t<GradValue_t> dh_alpha; 
 	CudaArray_t<char> dh_alpha_status; 	
 
-	/********** CACHE ***********/
+	/********** LRU CACHE ***********/
 	double cache_size; // cache size as set by parameter
 	CudaArray_t<CValue_t> dh_column_space;
 	CudaArray_t<CacheNode*> dh_columns;
 
 #if !USE_LIBSVM_SPARSE_FORMAT
 	/**** Sparse Vector representation ****/
+#if USE_SPARSE_BITVECTOR_FORMAT
+	CudaArray_t<int> dh_bitvector_table;
+#endif
 	CudaArray_t<uint32_t> dh_sparse_vector;
 #endif
 

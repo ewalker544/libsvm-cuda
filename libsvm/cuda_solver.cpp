@@ -18,6 +18,7 @@
 */
 #include "cuda_solver.h"
 #include "svm_device.h"
+#include "sparse_bit_vector.h"
 #include <memory>
 
 CudaSolver *cudaSolver;
@@ -331,7 +332,10 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 
 	/** allocate space for support vectors */
 #if !USE_LIBSVM_SPARSE_FORMAT
+	int bitvector_size;
+#if !USE_SPARSE_BITVECTOR_FORMAT
 	int max_dim = -1;
+#endif
 #endif
 	int elements = 0;
 	for (int i = 0; i < l; ++i)
@@ -339,7 +343,9 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		const svm_node *tmp = x[i];
 		while (tmp->index != -1) { // row terminator
 #if !USE_LIBSVM_SPARSE_FORMAT
+#if !USE_SPARSE_BITVECTOR_FORMAT
 			max_dim = std::max(max_dim, tmp->index); // index always starts from "1"
+#endif
 #endif
 			++elements; // count each row svm_node element
 			++tmp;
@@ -348,9 +354,11 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	}
 
 #if !USE_LIBSVM_SPARSE_FORMAT
+#if !USE_SPARSE_BITVECTOR_FORMAT
 	int max_words = (max_dim + WORD_SIZE-1) / WORD_SIZE;
 
 	dh_sparse_vector = make_unique_cuda_array<uint32_t>(l*max_words);
+#endif
 #endif
 
 	dbgprintf(true, "load_problem_parameters: %d elements need to be moved to device\n", elements);
@@ -365,8 +373,14 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	{
 
 #if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_SPARSE_BITVECTOR_FORMAT
+		SparseBitVector bit_vector(elements); // elements is our initial guess of the size of the sparse bit vector
+		std::unique_ptr<int[]> h_bitvector_table(new int[l]);
+		dh_bitvector_table = make_unique_cuda_array<int>(l);
+#else
 		std::unique_ptr<uint32_t[]> h_sparse_vector(new uint32_t[l*max_words]);
 		memset(&h_sparse_vector[0], 0, l*max_words*sizeof(uint32_t));
+#endif
 #endif
 
 		int next_loc = 0; // index in dh_space to move elements too
@@ -375,14 +389,22 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		std::unique_ptr<cuda_svm_node[]> x_space(new cuda_svm_node[transfer_chunk]); 
 		for (int i = 0; i < l; ++i) {
 #if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_SPARSE_BITVECTOR_FORMAT
+			h_bitvector_table[i] = bit_vector.get_pos();
+#else
 			size_t pattern_offset = i * max_words;
+#endif
 #endif
 			const svm_node *tmp = x[i];
 			while (tmp->index != -1) {
 
 #if !USE_LIBSVM_SPARSE_FORMAT
 				int idx = tmp->index-1; // index always starts from 1
+#if USE_SPARSE_BITVECTOR_FORMAT
+				bit_vector.set(idx); // set the index in the sparse bit vector
+#else
 				h_sparse_vector[pattern_offset + idx / WORD_SIZE] |= (1 << (idx%WORD_SIZE)); 
+#endif
 #endif
 
 #if USE_LIBSVM_SPARSE_FORMAT
@@ -394,8 +416,6 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 				++j;
 				if (j == transfer_chunk) {
 					// x_space is full, time to transfer to device
-					dbgprintf(true, "load_problem_parameters: transferring %d bytes (%d elements) to starting index %d\n",
-						j * sizeof(cuda_svm_node), j, next_loc);
 					err = cudaMemcpy(&dh_space[next_loc], &x_space[0], j * sizeof(cuda_svm_node), cudaMemcpyHostToDevice);
 					check_cuda_return("fail to copy to device for dh_space", err);
 					next_loc += j; // next position in dh_space to fill
@@ -407,12 +427,13 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			x_space[j++].y = -1;
 #else
 			x_space[j++].x = -1;
+#if USE_SPARSE_BITVECTOR_FORMAT
+			bit_vector.set(SparseBitVector::sentinel); // mark the end of the bit vector for this SV
+#endif
 #endif
 
 			if (j == transfer_chunk) {
 				// x_space is full, time to transfer to device
-				dbgprintf(true, "load_problem_parameters: transferring %d bytes (%d elements) to starting index %d\n",
-					j * sizeof(cuda_svm_node), j, next_loc);
 				err = cudaMemcpy(&dh_space[next_loc], &x_space[0], j * sizeof(cuda_svm_node), cudaMemcpyHostToDevice);
 				check_cuda_return("fail to copy to device for dh_space", err);
 				next_loc += j;  // next position in dh_space to fill
@@ -420,17 +441,27 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			}
 		}
 		if (j > 0) {
-			dbgprintf(true, "load_problem_parameters: final transfer of %d bytes (%d elements) to starting index %d\n",
-				j * sizeof(cuda_svm_node), j, next_loc);
 			err = cudaMemcpy(&dh_space[next_loc], &x_space[0], j * sizeof(cuda_svm_node), cudaMemcpyHostToDevice);
 			check_cuda_return("fail to copy to device for dh_space", err);
 		}
 
 #if !USE_LIBSVM_SPARSE_FORMAT
-		err = cudaMemcpy(&dh_sparse_vector[0], &h_sparse_vector[0], l * max_words * sizeof(uint32_t), cudaMemcpyHostToDevice);
+#if USE_SPARSE_BITVECTOR_FORMAT
+		// copy bit vector table
+		err = cudaMemcpy(&dh_bitvector_table[0], &h_bitvector_table[0], l * sizeof(int), cudaMemcpyHostToDevice);
+		check_cuda_return("fail to copy to device for dh_bitvector_table", err);
+	
+		uint32_t *h_sparse_vector = bit_vector.get_buffer(bitvector_size);
+		dbgprintf(true, "load_problem_parameters: sparse bit vector size is %d\n", bitvector_size);
+
+		dh_sparse_vector = make_unique_cuda_array<uint32_t>(bitvector_size);
+		dbgprintf(true, "load_problem_parameters: created dh_sparse_vector of size %d\n", bitvector_size);
+#else
+		bitvector_size = l * max_words;
+#endif
+		err = cudaMemcpy(&dh_sparse_vector[0], &h_sparse_vector[0], bitvector_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
 		check_cuda_return("fail to copy to device for dh_sparse_vector", err);
 #endif
-
 	}
 
 	dbgprintf(true, "load_problem_parameters: setting up dh_x\n");
@@ -451,12 +482,17 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		check_cuda_return("fail to copy to device for dh_x", err);
 	}
 
-#if USE_LIBSVM_SPARSE_FORMAT
-	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l, NULL, 0);
-#else
-	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l, &dh_sparse_vector[0], max_words);
-#endif
+	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l);
 	check_cuda_return("fail to setup parameter constants", err);
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_SPARSE_BITVECTOR_FORMAT
+	err = update_sparse_vector(&dh_sparse_vector[0], bitvector_size * sizeof(uint32_t), &dh_bitvector_table[0], l * sizeof(int), -1);
+#else
+	err = update_sparse_vector(&dh_sparse_vector[0], bitvector_size * sizeof(uint32_t), NULL, -1, max_words);
+#endif
+	check_cuda_return("fail to setup sparse bit vector", err);
+#endif
 }
 
 CudaSolver::CudaSolver(const svm_problem &prob, const svm_parameter &param, bool quiet_mode)

@@ -104,13 +104,15 @@ cudaError_t update_solver_variables(SChar_t *dh_y, CValue_t *dh_QD, GradValue_t 
 
 cudaError_t update_rbf_variables(CValue_t *dh_x_square);
 
-cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l, uint32_t *dh_sparse_vector, int max_bytes);
+cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l);
 
 void unbind_texture();
 
 void init_device_gradient1(int block_size, int startj, int stepj, int N);
 
 void init_device_gradient2(int block_size, int startj, int stepj, int N);
+
+cudaError_t update_sparse_vector(uint32_t *dh_sparse_vector, int sparse_vector_size, int *dh_bitvector_table, int bitvector_table_size, int max_words);
 
 /***** LRU Column Cache *******/
 void show_device_cache_stats();

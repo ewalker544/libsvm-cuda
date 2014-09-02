@@ -47,7 +47,8 @@ const double libsvm_cuda_version = 0.318;
 #endif
 #endif
 
-#define USE_LIBSVM_SPARSE_FORMAT 0 // for enabling the LIBSVM sparse vector format
+#define USE_LIBSVM_SPARSE_FORMAT 0 // LIBSVM default sparse vector format
+#define USE_SPARSE_BITVECTOR_FORMAT 0 // Experimental: sparse bit vector format
 #define DEBUG_VERIFY 	0	// for verifying ... more critical than debugging
 #define DEBUG_CHECK 	0	// for debugging
 #define DEBUG_TRACE 	0 	// for tracing calls

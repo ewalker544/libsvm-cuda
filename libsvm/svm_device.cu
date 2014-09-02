@@ -30,6 +30,7 @@ using namespace std;
 #include "svm_device.h"
 #include "cuda_reducer.h"
 #include "svm_cache.h"
+#include "sparse_bit_vector.h"
 
 #define DEVICE_EPS	0
 
@@ -41,15 +42,16 @@ texture<float2, 1, cudaReadModeElementType> 	d_tex_space;
 texture<float1, 1, cudaReadModeElementType> 	d_tex_space;
 #endif
 
-#if !USE_LIBSVM_SPARSE_FORMAT
-texture<uint32_t, 1, cudaReadModeElementType> 	d_tex_sparse_vector;
-__constant__	int				d_max_words;
-#endif
-
 #if USE_CONSTANT_INDEX
 __constant__	int				*d_x;
 #else
 texture<int, 1, cudaReadModeElementType> 		d_tex_x;
+#endif
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+texture<uint32_t, 1, cudaReadModeElementType> 	d_tex_sparse_vector;
+__device__ 		int				*d_bitvector_table;
+__constant__	int				d_max_words;
 #endif
 
 __device__		int				d_kernel_type;	// enum { LINEAR, POLY, RBF, SIGMOID, PRECOMPUTED }; /* kernel_type */
@@ -75,7 +77,44 @@ __device__		GradValue_t		d_delta_alpha_j;
 __device__		int2			d_solver; // member x and y hold the selected i and j working set indices respectively
 __device__		int2			d_nu_solver; // member x and y hold the Gmaxp_idx and Gmaxn_idx indices respectively.  
 
-cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l, uint32_t *dh_sparse_vector, int max_words)
+cudaError_t update_sparse_vector(uint32_t *dh_sparse_vector, int sparse_vector_size, int *dh_bitvector_table, int bitvector_table_size, int max_words)
+{
+	cudaError_t err = cudaSuccess;
+
+#if !USE_LIBSVM_SPARSE_FORMAT
+	if (dh_sparse_vector != NULL) {
+		err = cudaBindTexture(NULL, d_tex_sparse_vector, dh_sparse_vector, sparse_vector_size);
+		if (err != cudaSuccess) {
+			fprintf(stderr, "Error binding to texture d_tex_sparse_vector\n");
+			return err;
+		}
+	}
+
+#if USE_SPARSE_BITVECTOR_FORMAT
+	if (dh_bitvector_table == NULL) {
+		fprintf(stderr, "Error: dh_bitvector_table cannot be NULL\n");
+		return cudaErrorInvalidConfiguration;
+	}
+	err = cudaMemcpyToSymbol(d_bitvector_table, &dh_bitvector_table, sizeof(dh_bitvector_table));
+	if (err != cudaSuccess) {
+		fprintf(stderr, "Error copying symbol to d_bitvector_table\n");
+		return err;
+	}
+
+#endif
+
+	if (max_words > 0) {
+		err = cudaMemcpyToSymbol(d_max_words, &max_words, sizeof(max_words));
+		if (err != cudaSuccess) {
+			fprintf(stderr, "Error copying to symbol d_max_words\n");
+			return err;
+		}
+	}
+#endif
+	return err;
+}
+
+cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_svm_node *dh_space, size_t dh_space_size, int l)
 {
 	cudaError_t err;
 	err = cudaMemcpyToSymbol(d_l, &l, sizeof(l));
@@ -119,18 +158,6 @@ cudaError_t update_param_constants(const svm_parameter &param, int *dh_x, cuda_s
 	err = cudaBindTexture(0, d_tex_x, dh_x, l*sizeof(int));
 	if (err != cudaSuccess) {
 		fprintf(stderr, "Error binding to d_tex_space\n");
-		return err;
-	}
-#endif
-
-#if !USE_LIBSVM_SPARSE_FORMAT
-	err = cudaBindTexture(NULL, d_tex_sparse_vector, dh_sparse_vector, l * max_words * sizeof(uint32_t));
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Error binding to texture d_tex_sparse_vector\n");
-	}
-	err = cudaMemcpyToSymbol(d_max_words, &max_words, sizeof(max_words));
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Error copying to symbol d_max_words\n");
 		return err;
 	}
 #endif
@@ -213,13 +240,14 @@ void unbind_texture()
 #endif
 }
 
-
-__device__ __forceinline__ cuda_svm_node get_col_value(int i)
+__device__ __forceinline__ 
+cuda_svm_node get_col_value(int i)
 {
 	return tex1Dfetch(d_tex_space, i);
 }
 
-__device__ __forceinline__ int get_x(int i)
+__device__ __forceinline__ 
+int get_x(int i)
 {
 #if USE_CONSTANT_INDEX
 	return d_x[i];
@@ -232,7 +260,8 @@ __device__ __forceinline__ int get_x(int i)
 /**
 Compute dot product of 2 vectors
 */
-__device__ CValue_t dot(int i, int j)
+__device__ 
+CValue_t dot(int i, int j)
 {
 	int i_col = get_x(i);
 	int j_col = get_x(j);
@@ -267,7 +296,90 @@ __device__ CValue_t dot(int i, int j)
 }
 #else
 
-__device__ __forceinline__ uint32_t least_significant_bit(uint32_t x, uint32_t &x_nobit)
+__device__ __forceinline__ 
+uint32_t get_bitvector(int i)
+{
+	return tex1Dfetch(d_tex_sparse_vector, i);
+}
+
+#if USE_SPARSE_BITVECTOR_FORMAT
+__device__ __forceinline__
+int get_bitvector_table(int i)
+{
+	return d_bitvector_table[i];
+}
+
+__device__ __forceinline__
+int get_next_idx(int &idx, size_t &run, uint32_t &pattern, int &poffset)
+{
+#if BITVECTOR_16BIT
+	size_t sizeof_run = 2;
+#else
+	size_t sizeof_run = 4;
+#endif
+	if ((pattern & BIT_MASK) == 0)
+		return -1;
+
+	bool done = false;
+	while (!done) {
+		idx += (pattern & MAX_RUN);
+		done = (pattern & BIT_SET);
+		pattern >>= SHIFT_BITS;
+		++run;
+		if (run == sizeof_run) {
+			pattern = get_bitvector(poffset++);
+			run = 0;
+		}
+	}
+	return idx;
+}
+
+/**
+  Compute dot product of 2 vectors
+  */
+__device__ 
+CValue_t dot(int i, int j)
+{
+	int i_off = get_x(i);
+	int j_off = get_x(j);
+
+	int i_poffset = get_bitvector_table(i);
+	int j_poffset = get_bitvector_table(j);
+
+	uint32_t i_pattern, j_pattern;
+	int i_idx = 0, j_idx = 0;
+	size_t i_run = 0, j_run = 0;
+
+	i_pattern = get_bitvector(i_poffset++); // fetch the index mask for i
+	i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
+
+	j_pattern = get_bitvector(j_poffset++); // fetch the index mask for j
+	j_idx = get_next_idx(j_idx, j_run, j_pattern, j_poffset);
+
+	CValue_t sum = 0;
+	while (i_idx != -1 && j_idx != -1) {
+		if (i_idx == j_idx) {
+			cuda_svm_node x = get_col_value(i_off++);
+			cuda_svm_node y = get_col_value(j_off++);
+			sum += x.x * y.x;
+			i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
+			j_idx = get_next_idx(j_idx, j_run, j_pattern, j_poffset);
+		}
+		else if (i_idx < j_idx) {
+			i_off++;
+			i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
+		}
+		else {
+			j_off++;
+			j_idx = get_next_idx(j_idx, j_run, j_pattern, j_poffset);
+		}
+	}
+	return sum;
+}
+
+#else
+__device__ __forceinline__ 
+uint32_t least_significant_bit(uint32_t x, uint32_t &x_nobit)
 {
 	x_nobit = x & (x - 1);
 	return x & ~x_nobit;
@@ -276,7 +388,8 @@ __device__ __forceinline__ uint32_t least_significant_bit(uint32_t x, uint32_t &
 /**
   Compute dot product of 2 vectors
   */
-__device__ CValue_t dot(int i, int j)
+__device__ 
+CValue_t dot(int i, int j)
 {
 	int i_off = get_x(i);
 	int j_off = get_x(j);
@@ -287,10 +400,10 @@ __device__ CValue_t dot(int i, int j)
 		cuda_svm_node.x == svm_node.value
 	*/
 	uint32_t x_pattern, y_pattern;
-	double sum = 0;
+	CValue_t sum = 0;
 	for (int k1 = 0; k1 < d_max_words; k1++) {
-		x_pattern = tex1Dfetch(d_tex_sparse_vector, i_poffset++); // fetch the index mask for i
-		y_pattern = tex1Dfetch(d_tex_sparse_vector, j_poffset++); // fetch the index mask for j
+		x_pattern = get_bitvector(i_poffset++); // fetch the index mask for i
+		y_pattern = get_bitvector(j_poffset++); // fetch the index mask for j
 
 		if (x_pattern == 0 && y_pattern == 0)
 			continue;
@@ -343,31 +456,36 @@ __device__ CValue_t dot(int i, int j)
 	}
 	return sum;
 }
-
+#endif
 #endif
 
-__device__ CValue_t device_kernel_rbf(const int &i, const int &j)
+__device__ 
+CValue_t device_kernel_rbf(const int &i, const int &j)
 {
 	CValue_t q = d_x_square[i] + d_x_square[j] - 2 * dot(i, j);
 	return exp(-(CValue_t)d_gamma * q);
 }
 
-__device__ CValue_t device_kernel_poly(const int &i, const int &j)
+__device__ 
+CValue_t device_kernel_poly(const int &i, const int &j)
 {
 	return pow((CValue_t)d_gamma * dot(i, j) + (CValue_t)d_coef0, d_degree);
 }
 
-__device__ CValue_t device_kernel_sigmoid(const int &i, const int &j)
+__device__ 
+CValue_t device_kernel_sigmoid(const int &i, const int &j)
 {
 	return tanh((CValue_t)d_gamma * dot(i, j) + (CValue_t)d_coef0);
 }
 
-__device__ CValue_t device_kernel_linear(const int &i, const int &j)
+__device__ 
+CValue_t device_kernel_linear(const int &i, const int &j)
 {
 	return dot(i, j);
 }
 
-__device__ CValue_t device_kernel_precomputed(const int &i, const int &j)
+__device__ 
+CValue_t device_kernel_precomputed(const int &i, const int &j)
 {
 	int i_col = get_x(i);
 	int j_col = get_x(j);
@@ -382,7 +500,8 @@ Returns the product of the kernel function multiplied with rc
 @param j	index j
 @param rc	multiplier for the kernel function
 */
-__device__ __forceinline__ CValue_t kernel(const int &i, const int &j, const CValue_t &rc)
+__device__ __forceinline__ 
+CValue_t kernel(const int &i, const int &j, const CValue_t &rc)
 {
 	switch (d_kernel_type)
 	{
@@ -406,7 +525,8 @@ __device__ __forceinline__ CValue_t kernel(const int &i, const int &j, const CVa
 	[0..l-1] --> 1
 	[l..2*l) --> -1
 */
-__device__ __forceinline__ SChar_t device_SVR_sign(int i)
+__device__ __forceinline__ 
+SChar_t device_SVR_sign(int i)
 {
 	return (i < d_l ? 1 : -1);
 }
@@ -416,12 +536,14 @@ __device__ __forceinline__ SChar_t device_SVR_sign(int i)
 	[0..l-1] --> [0..l-1]
 	[l..2*l) --> [0..1-1]
 */
-__device__ __forceinline__ int device_SVR_real_index(int i)
+__device__ __forceinline__ 
+int device_SVR_real_index(int i)
 {
 	return (i < d_l ? i : (i - d_l));
 }
 
-__device__ CValue_t cuda_evalQ(int i, int j)
+__device__ 
+CValue_t cuda_evalQ(int i, int j)
 {
 	CValue_t rc = 1;
 
@@ -447,7 +569,8 @@ __device__ CValue_t cuda_evalQ(int i, int j)
 	return kernel(i, j, rc);
 }
 
-__global__ void cuda_find_min_idx(CValue_t *obj_diff_array, int *obj_diff_indx, CValue_t *result_obj_min, int *result_indx, int N)
+__global__ 
+void cuda_find_min_idx(CValue_t *obj_diff_array, int *obj_diff_indx, CValue_t *result_obj_min, int *result_indx, int N)
 {
 	D_MinIdxReducer func(obj_diff_array, obj_diff_indx, result_obj_min, result_indx); // Class defined in CudaReducer.h
 	device_block_reducer(func, N); // Template function defined in CudaReducer.h
@@ -455,7 +578,8 @@ __global__ void cuda_find_min_idx(CValue_t *obj_diff_array, int *obj_diff_indx, 
 		d_solver.y = func.return_idx();
 }
 
-__device__ void device_compute_obj_diff(int i, int j, CValue_t Qij, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx)
+__device__ 
+void device_compute_obj_diff(int i, int j, CValue_t Qij, GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx)
 {
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
@@ -510,7 +634,8 @@ __device__ void device_compute_obj_diff(int i, int j, CValue_t Qij, GradValue_t 
 
 }
 
-__global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
+__global__ 
+void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
 {
 	int i = d_solver.x;
 
@@ -533,7 +658,8 @@ __global__ void cuda_compute_obj_diff(GradValue_t Gmax, CValue_t *dh_obj_diff_ar
 	}
 }
 
-__global__ void cuda_compute_obj_diff_SVR(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
+__global__ 
+void cuda_compute_obj_diff_SVR(GradValue_t Gmax, CValue_t *dh_obj_diff_array, int *result_indx, int N)
 {
 	int i = d_solver.x;
 
@@ -561,7 +687,8 @@ __global__ void cuda_compute_obj_diff_SVR(GradValue_t Gmax, CValue_t *dh_obj_dif
 	}
 }
 
-__global__ void cuda_update_gradient(int N)
+__global__ 
+void cuda_update_gradient(int N)
 {
 	int i = d_solver.x; // selected i index
 	int j = d_solver.y; // selected j index
@@ -595,7 +722,8 @@ __global__ void cuda_update_gradient(int N)
 	}
 }
 
-__global__ void cuda_update_gradient_SVR(int N)
+__global__ 
+void cuda_update_gradient_SVR(int N)
 {
 	int i = d_solver.x; // selected i index
 	int j = d_solver.y; // selected j index
@@ -635,7 +763,8 @@ __global__ void cuda_update_gradient_SVR(int N)
 	}
 }
 
-__global__ void cuda_init_gradient(int start, int step, int N)
+__global__ 
+void cuda_init_gradient(int start, int step, int N)
 {
 	int j = blockIdx.x * blockDim.x + threadIdx.x;
 	if (j >= N)
@@ -657,7 +786,8 @@ __global__ void cuda_init_gradient(int start, int step, int N)
 /**
 double version of atomicAdd
 */
-__device__ double atomicAdd(double * address, double val)
+__device__ 
+double atomicAdd(double * address, double val)
 {
 	unsigned long long int *address_as_ull =
 		(unsigned long long int*)address;
@@ -671,7 +801,8 @@ __device__ double atomicAdd(double * address, double val)
 }
 #endif
 
-__device__ GradValue_t device_compute_gradient(int i, int j)
+__device__ 
+GradValue_t device_compute_gradient(int i, int j)
 {
 	if (!(d_alpha_status[i] == LOWER_BOUND)) /* !is_lower_bound(i) */
 	{
@@ -682,7 +813,8 @@ __device__ GradValue_t device_compute_gradient(int i, int j)
 }
 
 
-__device__ __forceinline__ GradValue_t warpReduceSum(GradValue_t val) 
+__device__ __forceinline__ 
+GradValue_t warpReduceSum(GradValue_t val) 
 {
 #if __CUDA_ARCH__ >= 300
 	for (int offset = warpSize/2; offset > 0; offset /= 2) {
@@ -692,7 +824,8 @@ __device__ __forceinline__ GradValue_t warpReduceSum(GradValue_t val)
 	return val;
 }
 
-__device__ __forceinline__ GradValue_t blockReduceSum(GradValue_t val) 
+__device__ __forceinline__ 
+GradValue_t blockReduceSum(GradValue_t val) 
 {
 #if __CUDA_ARCH__ >= 300
 	static __shared__ GradValue_t shared[32]; // Shared mem for 32 partial sums
@@ -713,7 +846,8 @@ __device__ __forceinline__ GradValue_t blockReduceSum(GradValue_t val)
 	return val;
 }
 
-__global__ void cuda_init_gradient_block2(int startj, int N)
+__global__ 
+void cuda_init_gradient_block2(int startj, int N)
 {
 	int j = blockIdx.y * blockDim.y + threadIdx.y + startj;
 	if (j >= N)
@@ -743,7 +877,8 @@ __global__ void cuda_init_gradient_block2(int startj, int N)
 	return;
 }
 
-__global__ void cuda_init_gradient_block1(int startj, int N)
+__global__ 
+void cuda_init_gradient_block1(int startj, int N)
 {
 	int i = blockIdx.x * blockDim.x * 2 + threadIdx.x;
 	int j = blockIdx.y * blockDim.y + threadIdx.y + startj;
@@ -809,7 +944,8 @@ void init_device_gradient1(int block_size, int startj, int stepj, int N)
 	check_cuda_kernel_launch("fail in cuda_init_gradient_block1");
 }
 
-__global__ void cuda_find_gmax(find_gmax_param param, int N, bool debug)
+__global__ 
+void cuda_find_gmax(find_gmax_param param, int N, bool debug)
 {
 	D_GmaxReducer func(param.dh_gmax, param.dh_gmax2, param.dh_gmax_idx, param.result_gmax, 
 		param.result_gmax2, param.result_gmax_idx, debug); // class defined in CudaReducer.h
@@ -820,7 +956,8 @@ __global__ void cuda_find_gmax(find_gmax_param param, int N, bool debug)
 		d_solver.x = func.return_idx();
 }
 
-__global__ void cuda_setup_x_square(int N)
+__global__ 
+void cuda_setup_x_square(int N)
 {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i >= N)
@@ -828,7 +965,8 @@ __global__ void cuda_setup_x_square(int N)
 	d_x_square[i] = dot(i, i);
 }
 
-__global__ void cuda_setup_QD(int N)
+__global__ 
+void cuda_setup_QD(int N)
 {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i >= N)
@@ -840,7 +978,8 @@ __global__ void cuda_setup_QD(int N)
 		d_QD[i + d_l] = d_QD[i];
 }
 
-__global__ void cuda_prep_gmax(GradValue_t *dh_gmax, GradValue_t *dh_gmax2, int *dh_gmax_idx, int N)
+__global__ 
+void cuda_prep_gmax(GradValue_t *dh_gmax, GradValue_t *dh_gmax2, int *dh_gmax_idx, int N)
 {
 	int t = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -872,12 +1011,14 @@ __global__ void cuda_prep_gmax(GradValue_t *dh_gmax, GradValue_t *dh_gmax2, int 
 	}
 }
 
-__device__	__forceinline__ double device_get_C(int i)
+__device__	__forceinline__ 
+double device_get_C(int i)
 {
 	return (d_y[i] > 0) ? d_Cp : d_Cn;
 }
 
-__global__ void cuda_compute_alpha()
+__global__ 
+void cuda_compute_alpha()
 {
 	int i = d_solver.x; // d_selected_i;
 	int j = d_solver.y; // d_selected_j;
@@ -978,7 +1119,8 @@ __global__ void cuda_compute_alpha()
 	d_delta_alpha_j = d_alpha[j] - old_alpha_j;
 }
 
-__device__ void device_update_alpha_status(int i)
+__device__ 
+void device_update_alpha_status(int i)
 {
 	if (d_alpha[i] >= device_get_C(i))
 		d_alpha_status[i] = UPPER_BOUND;
@@ -988,7 +1130,8 @@ __device__ void device_update_alpha_status(int i)
 		d_alpha_status[i] = FREE;
 }
 
-__global__ void cuda_update_alpha_status()
+__global__ 
+void cuda_update_alpha_status()
 {
 	int i = d_solver.x;
 	int j = d_solver.y;
@@ -1002,7 +1145,8 @@ __global__ void cuda_update_alpha_status()
 /*********** NU Solver ************/
 
 
-__global__ void cuda_prep_nu_gmax(GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2,
+__global__ 
+void cuda_prep_nu_gmax(GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, GradValue_t *dh_gmaxp2, GradValue_t *dh_gmaxn2,
 	int *dh_gmaxp_idx, int *dh_gmaxn_idx, int N)
 {
 	int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1039,7 +1183,8 @@ __global__ void cuda_prep_nu_gmax(GradValue_t *dh_gmaxp, GradValue_t *dh_gmaxn, 
 	}
 }
 
-__device__ void device_compute_nu_obj_diff(int ip, int in, int j, CValue_t Qipj, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx)
+__device__ 
+void device_compute_nu_obj_diff(int ip, int in, int j, CValue_t Qipj, GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx)
 {
 
 	dh_obj_diff_array[j] = CVALUE_MAX;
@@ -1094,7 +1239,8 @@ __device__ void device_compute_nu_obj_diff(int ip, int in, int j, CValue_t Qipj,
 
 }
 
-__global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+__global__ 
+void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
 {
 	int ip = d_nu_solver.x;
 	int in = d_nu_solver.y;
@@ -1118,7 +1264,8 @@ __global__ void cuda_compute_nu_obj_diff(GradValue_t Gmaxp, GradValue_t Gmaxn, C
 	}
 }
 
-__global__ void cuda_compute_nu_obj_diff_SVR(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
+__global__ 
+void cuda_compute_nu_obj_diff_SVR(GradValue_t Gmaxp, GradValue_t Gmaxn, CValue_t *dh_obj_diff_array, int *result_idx, int N)
 {
 	int ip = d_nu_solver.x;
 	int in = d_nu_solver.y;
@@ -1149,7 +1296,8 @@ __global__ void cuda_compute_nu_obj_diff_SVR(GradValue_t Gmaxp, GradValue_t Gmax
 }
 
 
-__global__ void cuda_find_nu_gmax(find_nu_gmax_param param, int N)
+__global__ 
+void cuda_find_nu_gmax(find_nu_gmax_param param, int N)
 {
 	D_NuGmaxReducer func(param.dh_gmaxp, param.dh_gmaxn, param.dh_gmaxp2, param.dh_gmaxn2, param.dh_gmaxp_idx, param.dh_gmaxn_idx,
 		param.result_gmaxp, param.result_gmaxn, param.result_gmaxp2, param.result_gmaxn2, param.result_gmaxp_idx, param.result_gmaxn_idx);
@@ -1166,7 +1314,8 @@ __global__ void cuda_find_nu_gmax(find_nu_gmax_param param, int N)
 
 
 
-__global__ void cuda_find_nu_min_idx(CValue_t *obj_diff_array, int *obj_diff_idx, CValue_t *result_obj_min, int *result_idx, int N)
+__global__ 
+void cuda_find_nu_min_idx(CValue_t *obj_diff_array, int *obj_diff_idx, CValue_t *result_obj_min, int *result_idx, int N)
 {
 	D_MinIdxReducer func(obj_diff_array, obj_diff_idx, result_obj_min, result_idx); // Class defined in CudaReducer.h
 	device_block_reducer(func, N); // Template function defined in CudaReducer.h
@@ -1274,7 +1423,8 @@ void launch_cuda_prep_nu_gmax(size_t num_blocks, size_t block_size, GradValue_t 
 /**
 useful for peeking at various misc values when debugging
 */
-__global__ void cuda_peek(int i, int j)
+__global__ 
+void cuda_peek(int i, int j)
 {
 	printf("Q(%d,%d)=%g\n", i, j, cuda_evalQ(i, j));
 }
