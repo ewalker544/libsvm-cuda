@@ -310,7 +310,7 @@ int get_bitvector_table(int i)
 }
 
 __device__ __forceinline__
-int get_next_idx(int &idx, size_t &run, uint32_t &pattern, int &poffset)
+int get_next_idx(int idx, size_t &run, uint32_t &pattern, int &poffset)
 {
 #if BITVECTOR_16BIT
 	size_t sizeof_run = 2;
@@ -320,8 +320,8 @@ int get_next_idx(int &idx, size_t &run, uint32_t &pattern, int &poffset)
 	if ((pattern & BIT_MASK) == 0)
 		return -1;
 
-	bool done = false;
-	while (!done) {
+	bool done;
+	do {
 		idx += (pattern & MAX_RUN);
 		done = (pattern & BIT_SET);
 		pattern >>= SHIFT_BITS;
@@ -330,7 +330,7 @@ int get_next_idx(int &idx, size_t &run, uint32_t &pattern, int &poffset)
 			pattern = get_bitvector(poffset++);
 			run = 0;
 		}
-	}
+	} while (!done);
 	return idx;
 }
 
