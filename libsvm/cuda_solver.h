@@ -165,7 +165,7 @@ protected:
 	CudaArray_t<CValue_t> dh_column_space;
 	CudaArray_t<CacheNode*> dh_columns;
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 	/**** Sparse Vector representation ****/
 #if USE_SPARSE_BITVECTOR_FORMAT
 	CudaArray_t<int> dh_bitvector_table;

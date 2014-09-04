@@ -331,7 +331,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	cache_size = param.cache_size;
 
 	/** allocate space for support vectors */
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 	int bitvector_size;
 #if !USE_SPARSE_BITVECTOR_FORMAT
 	int max_dim = -1;
@@ -342,7 +342,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	{
 		const svm_node *tmp = x[i];
 		while (tmp->index != -1) { // row terminator
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if !USE_SPARSE_BITVECTOR_FORMAT
 			max_dim = std::max(max_dim, tmp->index); // index always starts from "1"
 #endif
@@ -353,7 +353,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		++elements; // count the row terminating svm_node
 	}
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if !USE_SPARSE_BITVECTOR_FORMAT
 	int max_words = (max_dim + WORD_SIZE-1) / WORD_SIZE;
 
@@ -372,7 +372,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	dh_space = make_unique_cuda_array<cuda_svm_node>(elements);
 	{
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if USE_SPARSE_BITVECTOR_FORMAT
 		SparseBitVector bit_vector(elements); // elements is our initial guess of the size of the sparse bit vector
 		std::unique_ptr<int[]> h_bitvector_table(new int[l]);
@@ -388,7 +388,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 		int transfer_chunk = std::min(TRANSFER_CHUNK_SIZE, elements);
 		std::unique_ptr<cuda_svm_node[]> x_space(new cuda_svm_node[transfer_chunk]); 
 		for (int i = 0; i < l; ++i) {
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if USE_SPARSE_BITVECTOR_FORMAT
 			h_bitvector_table[i] = bit_vector.get_pos();
 #else
@@ -398,7 +398,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			const svm_node *tmp = x[i];
 			while (tmp->index != -1) {
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 				int idx = tmp->index-1; // index always starts from 1
 #if USE_SPARSE_BITVECTOR_FORMAT
 				bit_vector.set(idx); // set the index in the sparse bit vector
@@ -407,7 +407,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 #endif
 #endif
 
-#if USE_LIBSVM_SPARSE_FORMAT
+#if !USE_BITVECTOR_FORMAT
 				x_space[j].y = static_cast<float>(tmp->index); // in the LIBSVM SPARSE format, we send over the index
 #endif
 				x_space[j].x = static_cast<float>(tmp->value);
@@ -423,7 +423,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 				}
 			}
 
-#if USE_LIBSVM_SPARSE_FORMAT
+#if !USE_BITVECTOR_FORMAT
 			x_space[j++].y = -1;
 #else
 			x_space[j++].x = -1;
@@ -445,7 +445,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 			check_cuda_return("fail to copy to device for dh_space", err);
 		}
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if USE_SPARSE_BITVECTOR_FORMAT
 		// copy bit vector table
 		err = cudaMemcpy(&dh_bitvector_table[0], &h_bitvector_table[0], l * sizeof(int), cudaMemcpyHostToDevice);
@@ -485,7 +485,7 @@ void CudaSolver::load_problem_parameters(const svm_problem &prob, const svm_para
 	err = update_param_constants(param, &dh_x[0], &dh_space[0], sizeof(cuda_svm_node)*elements, prob.l);
 	check_cuda_return("fail to setup parameter constants", err);
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 #if USE_SPARSE_BITVECTOR_FORMAT
 	err = update_sparse_vector(&dh_sparse_vector[0], bitvector_size * sizeof(uint32_t), &dh_bitvector_table[0], l * sizeof(int), -1);
 #else

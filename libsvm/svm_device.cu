@@ -36,7 +36,7 @@ using namespace std;
 
 enum { LOWER_BOUND = 0, UPPER_BOUND = 1, FREE = 2 };
 
-#if USE_LIBSVM_SPARSE_FORMAT
+#if !USE_BITVECTOR_FORMAT
 texture<float2, 1, cudaReadModeElementType> 	d_tex_space;
 #else
 texture<float1, 1, cudaReadModeElementType> 	d_tex_space;
@@ -48,7 +48,7 @@ __constant__	int				*d_x;
 texture<int, 1, cudaReadModeElementType> 		d_tex_x;
 #endif
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 texture<uint32_t, 1, cudaReadModeElementType> 	d_tex_sparse_vector;
 __device__ 		int				*d_bitvector_table;
 __constant__	int				d_max_words;
@@ -81,7 +81,7 @@ cudaError_t update_sparse_vector(uint32_t *dh_sparse_vector, int sparse_vector_s
 {
 	cudaError_t err = cudaSuccess;
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 	if (dh_sparse_vector != NULL) {
 		err = cudaBindTexture(NULL, d_tex_sparse_vector, dh_sparse_vector, sparse_vector_size);
 		if (err != cudaSuccess) {
@@ -231,7 +231,7 @@ void unbind_texture()
 {
 	cudaUnbindTexture(d_tex_space);
 
-#if !USE_LIBSVM_SPARSE_FORMAT
+#if USE_BITVECTOR_FORMAT
 	cudaUnbindTexture(d_tex_sparse_vector);
 #endif
 
@@ -256,7 +256,7 @@ int get_x(int i)
 #endif
 }
 
-#if USE_LIBSVM_SPARSE_FORMAT
+#if !USE_BITVECTOR_FORMAT
 /**
 Compute dot product of 2 vectors
 */
