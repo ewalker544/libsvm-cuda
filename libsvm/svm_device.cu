@@ -258,7 +258,7 @@ int get_x(int i)
 
 #if !USE_BITVECTOR_FORMAT
 /**
-Compute dot product of 2 vectors
+Compute dot product of 2 vectors (libsvm sparse vector format)
 */
 __device__ 
 CValue_t dot(int i, int j)
@@ -276,20 +276,24 @@ CValue_t dot(int i, int j)
 	double sum = 0;
 	while (x.y != -1 && y.y != -1)
 	{
+		bool move_i = false, move_j = false;
 		if (x.y == y.y)
 		{
 			sum += x.x * y.x;
-			x = get_col_value(++i_col);
-			y = get_col_value(++j_col);
+			move_i = true;
+			move_j = true;
 		}
-		else
-		{
-			if (x.y > y.y) {
-				y = get_col_value(++j_col);
-			}
-			else {
-				x = get_col_value(++i_col);
-			}
+		else if (x.y > y.y) {
+			move_j = true;
+		}
+		else {
+			move_i = true;
+		}
+		if (move_i) {
+			x = get_col_value(++i_col);
+		}
+		if (move_j) {
+			y = get_col_value(++j_col);
 		}
 	}
 	return sum;
@@ -335,7 +339,7 @@ int get_next_idx(int idx, size_t &run, uint32_t &pattern, int &poffset)
 }
 
 /**
-  Compute dot product of 2 vectors
+  Compute dot product of 2 vectors (sparse bit vector version)
   */
 __device__ 
 CValue_t dot(int i, int j)
@@ -358,18 +362,25 @@ CValue_t dot(int i, int j)
 
 	CValue_t sum = 0;
 	while (i_idx != -1 && j_idx != -1) {
+		bool move_i = false, move_j = false;
 		if (i_idx == j_idx) {
-			cuda_svm_node x = get_col_value(i_off++);
-			cuda_svm_node y = get_col_value(j_off++);
+			cuda_svm_node x = get_col_value(i_off);
+			cuda_svm_node y = get_col_value(j_off);
 			sum += x.x * y.x;
-			i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
-			j_idx = get_next_idx(j_idx, j_run, j_pattern, j_poffset);
+			move_i = true;
+			move_j = true;
 		}
 		else if (i_idx < j_idx) {
+			move_i = true;
+		}
+		else {
+			move_j = true;
+		}
+		if (move_i) {
 			i_off++;
 			i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
 		}
-		else {
+		if (move_j) {
 			j_off++;
 			j_idx = get_next_idx(j_idx, j_run, j_pattern, j_poffset);
 		}
@@ -386,7 +397,7 @@ uint32_t least_significant_bit(uint32_t x, uint32_t &x_nobit)
 }
 
 /**
-  Compute dot product of 2 vectors
+  Compute dot product of 2 vectors (bit vector version)
   */
 __device__ 
 CValue_t dot(int i, int j)
