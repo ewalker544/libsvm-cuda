@@ -258,6 +258,31 @@ int get_x(int i)
 
 #if !USE_BITVECTOR_FORMAT
 /**
+  Compute dot square product of vector
+  */
+__device__ __inline__
+CValue_t dot_square(int i)
+{
+	int i_col = get_x(i);
+
+	/**
+	remember:
+	cuda_svm_node.x == svm_node.value
+	cuda_svm_node.y == svm_node.index
+	*/
+	cuda_svm_node x = get_col_value(i_col);
+
+	CValue_t sum = 0;
+	while (x.y != -1)
+	{	
+		sum += x.x * x.x;
+		x = get_col_value(++i_col);
+	}
+
+	return sum;
+}
+
+/**
 Compute dot product of 2 vectors (libsvm sparse vector format)
 */
 __device__ 
@@ -339,6 +364,31 @@ int get_next_idx(int idx, size_t &run, uint32_t &pattern, int &poffset)
 }
 
 /**
+   Compute dot square product of vector
+*/
+__device__ CValue_t dot_square(int i)
+{
+	int i_off = get_x(i);
+
+	int i_poffset = get_bitvector_table(i);
+
+	uint32_t i_pattern;
+	int i_idx = 0;
+	size_t i_run = 0;
+
+	i_pattern = get_bitvector(i_poffset++); // fetch the index mask for i
+	i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
+
+	CValue_t sum = 0;
+	while (i_idx != -1) {
+		cuda_svm_node x = get_col_value(i_off++);
+		sum += x.x * x.x;
+	    i_idx = get_next_idx(i_idx, i_run, i_pattern, i_poffset);
+	}
+	return sum;
+}
+
+/**
   Compute dot product of 2 vectors (sparse bit vector version)
   */
 __device__ 
@@ -394,6 +444,34 @@ uint32_t least_significant_bit(uint32_t x, uint32_t &x_nobit)
 {
 	x_nobit = x & (x - 1);
 	return x & ~x_nobit;
+}
+
+/**
+   Compute dot square product of vector
+*/
+__device__ CValue_t dot_square(int i)
+{
+	int i_off = get_x(i);
+	size_t i_poffset = i * d_max_words;
+	uint32_t x_pattern;
+
+	CValue_t sum = 0;
+	for (int k1 = 0; k1 < d_max_words; k1++) {
+		x_pattern = get_bitvector(i_poffset++); // fetch the index mask for i
+
+		if (x_pattern == 0)
+			continue;
+
+		uint32_t bx = 0;
+		least_significant_bit(x_pattern, bx); // get the first least significant bit in x
+		do {
+			cuda_svm_node x = get_col_value(i_off++);
+			sum += x.x * x.x;
+			x_pattern = bx;
+			least_significant_bit(x_pattern, bx); // move to the next bit in x
+		} while (x_pattern > 0);
+	}
+	return sum;
 }
 
 /**
@@ -973,7 +1051,7 @@ void cuda_setup_x_square(int N)
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i >= N)
 		return;
-	d_x_square[i] = dot(i, i);
+	d_x_square[i] = dot_square(i);
 }
 
 __global__ 
