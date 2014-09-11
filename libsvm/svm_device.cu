@@ -28,8 +28,8 @@ using namespace std;
 #include "math_constants.h"
 #include "math.h"
 #include "svm_device.h"
-#include "cuda_reducer.h"
-#include "svm_cache.h"
+#include "device_reduce.h"
+#include "device_cache.h"
 #include "sparse_bit_vector.h"
 
 #define DEVICE_EPS	0
