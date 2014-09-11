@@ -210,6 +210,13 @@ void setup_device_LRU_cache(CacheNode **dh_columns, CValue_t *dh_column_space, i
 	setup_LRU_cache << <1, 1 >> >(dh_columns, dh_column_space, space, col_size);
 }
 
+/**
+ * Returns a cached column if available.  Otherwise, look for new column to fill. 
+ * @param col 			column index
+ * @param valid			returns true if column buffer has valid data
+ * @param stage_area 	area to stage this column buffer for future access
+ * @return column buffer
+ **/
 __device__ 
 static CValue_t *cache_get_Q(int col, bool &valid, StageArea_t stage_area)
 {
@@ -257,15 +264,26 @@ static CValue_t *cache_get_Q(int col, bool &valid, StageArea_t stage_area)
 	return n->column; // return the buffer associated with this cache node
 }
 
+/**
+ * Get the staged column
+ * @param col	column index
+ * @param stage_area	staging area to look up
+ * @param column buffer
+ * */
 __device__ 
-static CValue_t *cache_get_Stage(int i, StageArea_t stage_area)
+static CValue_t *cache_get_Stage(int col, StageArea_t stage_area)
 {
-	if (d_staging_area[stage_area] && d_staging_area[stage_area]->col_idx == i)
+	if (d_staging_area[stage_area] && d_staging_area[stage_area]->col_idx == col)
 		return d_staging_area[stage_area]->column;
 	else
 		return NULL;
 }
 
+/**
+ * Put the staged column buffer back into the LRU list
+ * @param col			column index
+ * @param stage_area	staging area for column buffer
+ **/
 __device__ __forceinline__ 
 static void cache_commit_StageArea(int col, StageArea_t stage_area) 
 {
@@ -286,6 +304,11 @@ static void cache_commit_StageArea(int col, StageArea_t stage_area)
 
 }
 
+/**
+ * Commit the i and j staging areas
+ * @i	column index for i
+ * @j	column index for j
+ **/
 __device__ 
 static void cache_commit_Stages(int i, int j)
 {

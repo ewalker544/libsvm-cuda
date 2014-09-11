@@ -64,7 +64,7 @@ class SparseBitVector {
  	* 	Initializes the next word at a 32-bit alignment boundary.
  	*/
 	void init_word() {
-		if ((pos % UINT32_SIZE) == 0) { // at a 32 bit alignment, we get to decide which mode we want to be in
+		if ((pos % UINT32_SIZE) == 0) { // at a 32 bit alignment, we initialize the word to zero
 			uint32_t *word = reinterpret_cast<uint32_t *>(&bit[pos]);
 			*word = 0;
 		}
@@ -108,7 +108,7 @@ class SparseBitVector {
  	*/
 	template <typename T>
 	void set_word_sentinel() {
-		pos += sizeof(T);
+		pos += sizeof(T); // the word is already initialized to zero
 	}
 
 	void set_buffer(int len, int idx)
